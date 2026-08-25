@@ -8,8 +8,12 @@ const WIKI_DIR = '.wiki'
 const MANIFEST_FILE = '.manifest.json'
 const CATEGORIES: WikiCategory[] = ['concepts', 'entities', 'references', 'synthesis', 'projects']
 
-/** 页面 id 的严格 kebab-case 模式：id 直接用作文件名，任何穿越字符（/ \ . ..）一律拒绝。 */
-const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]*$/
+/**
+ * 页面 id 的严格 kebab-case 模式（允许 CJK 字符，中文标题页保留语义文件名）：
+ * 仍拒绝所有路径穿越字符（. / \ 等均不在字符集内）。id 直接用作文件名，
+ * resolve() 包含性检查作为第二道防线。
+ */
+const SAFE_ID_RE = /^[a-z0-9\u4e00-\u9fff][a-z0-9\u4e00-\u9fff-]*$/
 
 export class VaultStore {
   private readonly wikiRoot: string

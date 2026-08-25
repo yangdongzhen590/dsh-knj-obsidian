@@ -105,6 +105,25 @@ test('writePage 拒绝越权 id（路径穿越防护），readPage 对非法 id 
   assert.ok(!existsSync(join(dir, 'evil.md')))
 })
 
+test('writePage 接受含 CJK 的合法 id（中文标题页面），往返读写正常', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.ensure()
+  const page = {
+    id: '关于-429-的总结', title: '关于 429 的总结', category: 'concepts', tags: [],
+    source: 'agent:capture', confidence: 'inferred',
+    created: '2026-08-25T00:00:00.000Z', updated: '2026-08-25T00:00:00.000Z',
+    body: '## 核心\n指数退避。',
+  }
+  const res = store.writePage(page)
+  assert.equal(res.created, true)
+  assert.ok(existsSync(join(dir, '.wiki', 'concepts', '关于-429-的总结.md')))
+  const back = store.readPage('关于-429-的总结', 'concepts')
+  assert.ok(back)
+  assert.equal(back.id, '关于-429-的总结')
+  assert.equal(back.title, '关于 429 的总结')
+})
+
 test('readPage 解析 CRLF 行尾的文件（Windows / git autocrlf）', (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
