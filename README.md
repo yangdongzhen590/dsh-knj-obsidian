@@ -12,13 +12,13 @@ DSH（DeepSeek Harness）内简化版 Obsidian：为 AI agent 提供项目级知
 # 1. 在插件目录内打包
 npm pack
 
-# 2. 安装到 DSH 的 web profile（在 DSH 仓库或宿主工作区执行）
+# 2. 在插件目录内执行：安装到 DSH 的 web profile
 dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.250.tgz
 
 # 3. 重启 DSH，确认宿主日志无 dsh-knj-obsidian 相关报错
 ```
 
-安装后插件在 DSH 启动时自动向 agent 暴露工具（`wiki_ingest` / `wiki_capture` / `wiki_lint`），无需额外配置。可选配置 `vaultDirName`（默认 `.wiki`）可自定义知识库目录名。
+安装后插件在 DSH 启动时自动向 agent 暴露工具（`wiki_ingest` / `wiki_capture` / `wiki_lint`），无需额外配置。
 
 ## v1 能力
 
@@ -26,7 +26,7 @@ dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.250.tgz
 | --- | --- |
 | `wiki_ingest` | 把 agent 提取好的知识页批量写入 wiki。入参 `pages`（id / title / category / tags / confidence / body）+ `source`（源材料标识）。同 id 页面自动合并正文（保留 `created`、更新 `updated`）；传入 `contentHash`（源内容 SHA-256）且与 manifest 记录一致时**整体跳过**，实现增量 ingest。 |
 | `wiki_capture` | 把当前讨论快速沉淀为一条知识页（quick 模式，默认写入 `references/`，`confidence=inferred`），适合把对话结论即时落盘。 |
-| `wiki_lint` | 健康度检查：孤儿页（无入链也无出链）、断链（`[[wikilink]]` 指向不存在页面）、缺 frontmatter。返回报告供 agent 自查或人工查看。 |
+| `wiki_lint` | 健康度检查：孤儿页（入链或出链缺失的页面）、断链（`[[wikilink]]` 指向不存在页面）、缺 frontmatter。返回报告供 agent 自查或人工查看。 |
 
 ## `.wiki` 结构
 

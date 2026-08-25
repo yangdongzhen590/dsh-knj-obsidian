@@ -6,7 +6,7 @@ import { mountTools } from './tools.ts'
 export const name = 'dsh-knj-obsidian'
 
 export interface Config {
-  /** vault 目录名（默认 .wiki） */
+  /** vault 目录名（默认 .wiki）。v1 未实现：apply 忽略 config，目录名为 vault-store 硬编码常量；v2 接入。 */
   vaultDirName?: string
 }
 
