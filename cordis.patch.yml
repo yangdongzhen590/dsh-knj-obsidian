@@ -1,0 +1,4 @@
+# dsh-knj-obsidian bundle patch
+- insert:
+    - id: dsh-knj-obsidian
+      name: 'dsh-knj-obsidian'
