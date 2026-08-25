@@ -5,6 +5,9 @@ import type { VaultStore } from './vault-store.ts'
 import type { WikiCategory, Confidence } from './types.ts'
 import { lintVault } from './lint.ts'
 import { retrieve } from './retriever.ts'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { buildGraph, exportGraphHtml } from './graph-engine.ts'
 
 export function mountTools(ctx: Context, store: VaultStore): () => void {
   ctx.tools.register(defineTool({
@@ -177,6 +180,35 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
         mode: args.mode === 'index-only' ? 'index-only' : 'auto',
         maxCandidates: args.maxCandidates ?? 10,
       })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'wiki_export',
+    description: '把 wiki 的 wikilink 图谱导出为 graph.json（结构化数据）或 graph.html（单文件交互可视化，浏览器可开）。写入 <vault>/wiki-export/。',
+    parameters: {
+      format: { type: 'string', enum: ['html', 'json'], description: 'html=交互图谱；json=结构化图数据' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          file: { type: 'string', required: true },
+          nodeCount: { type: 'number', required: true },
+          edgeCount: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: `图谱已导出：${value.nodeCount} 节点 / ${value.edgeCount} 边 → ${value.file}` }],
+    },
+    async execute(args) {
+      const format = args.format === 'json' ? 'json' : 'html'
+      const graph = buildGraph(store)
+      const exportDir = join(store.wikiRoot, 'wiki-export')
+      mkdirSync(exportDir, { recursive: true })
+      const file = format === 'json' ? 'graph.json' : 'graph.html'
+      const content = format === 'json' ? JSON.stringify(graph, null, 2) : exportGraphHtml(graph)
+      writeFileSync(join(exportDir, file), content, 'utf8')
+      return { file: `wiki-export/${file}`, nodeCount: graph.nodes.length, edgeCount: graph.edges.length }
     },
   }))
 
