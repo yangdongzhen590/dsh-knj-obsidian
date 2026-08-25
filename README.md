@@ -2,7 +2,7 @@
 
 DSH（DeepSeek Harness）内简化版 Obsidian：为 AI agent 提供项目级知识库（wiki）的**构建**能力。agent 通过工具把对话、文档、网页等源材料蒸馏为结构化知识页，落盘到项目根目录的 `.wiki/`，形成可复用、可维护的知识资产。
 
-当前版本为 **v1 构建核心 + v2 检索**：写入侧（ingest / capture / lint）已完整；检索侧提供 `wiki_query` 工具与 `wiki-query` skill 双通道（见下文「v2：检索」）；图谱与 UI 仍在 v2 路线中。
+当前版本为 **v1 构建核心 + v2 检索 + v3 图谱导出**：写入侧（ingest / capture / lint）已完整；检索侧提供 `wiki_query` 工具与 `wiki-query` skill 双通道（见下文「v2：检索」）；图谱侧提供 `wiki_export` 工具导出交互图谱与结构化图数据（见下文「v3：图谱导出」）；UI 仍在路线中。
 
 ## 安装方式
 
@@ -13,12 +13,12 @@ DSH（DeepSeek Harness）内简化版 Obsidian：为 AI agent 提供项目级知
 npm pack
 
 # 2. 在插件目录内执行：安装到 DSH 的 web profile
-dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.252.tgz
+dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.254.tgz
 
 # 3. 重启 DSH，确认宿主日志无 dsh-knj-obsidian 相关报错
 ```
 
-安装后插件在 DSH 启动时自动向 agent 暴露工具（`wiki_ingest` / `wiki_capture` / `wiki_lint` / `wiki_query`），并随包分发 `wiki-query` skill，无需额外配置。
+安装后插件在 DSH 启动时自动向 agent 暴露工具（`wiki_ingest` / `wiki_capture` / `wiki_lint` / `wiki_query` / `wiki_export`），并随包分发 `wiki-query` skill，无需额外配置。
 
 ## v1 能力
 
@@ -92,17 +92,61 @@ v2 检索基于同一 `.wiki/` 知识库，提供**双通道**能力，均**只�
 
 无 dsh 工具的环境里，agent 按 `wiki-query/SKILL.md` 的流程用 grep / glob / read 完成同等检索，降级路径（无 grep、无 index.md、结果过多）见 `references/retrieval-guide.md`。skill 只读，发现新知识时路由到 `wiki_ingest` / `wiki_capture`。
 
-## v2 路线
+## v3：图谱导出
+
+v3 图谱基于同一 `.wiki/` 知识库构建 **wikilink 知识图谱**（节点=页面、边=`[[wikilink]]` 链接），提供 `wiki_export` 工具导出，只读（不修改任何页面）。
+
+### wiki_export 工具
+
+agent 被问到「导出 wiki 图谱」「看看知识库的结构/关联」「生成知识图谱」时自动调用它。入参 `format`：
+
+| format | 产物 | 用途 |
+| --- | --- | --- |
+| `html`（默认） | `graph.html` | 单文件交互可视化：内联 SVG + 原生 JS 力导向布局，零外部依赖，浏览器可直接打开 |
+| `json` | `graph.json` | 结构化图数据（节点 / 边 / 孤儿 / 统计），供外部工具（Gephi / Neo4j / 自研分析）使用 |
+
+产物写入 `<vault>/wiki-export/`（vault = 项目根目录 `.wiki/`），返回 `file` / `nodeCount` / `edgeCount`。
+
+### 浏览器打开
+
+导出后直接打开 `.wiki/wiki-export/graph.html`：
+
+- **拖拽**节点调整布局，**滚轮**缩放（viewBox），悬停节点显示标题与分类
+- 节点按 **category 着色**（concepts 蓝 / entities 绿 / references 橙 / synthesis 紫 / projects 灰）
+- 顶部显示 `N 节点 · M 边` 统计，底部为图例
+
+### graph.json 格式
+
+```json
+{
+  "nodes": [ { "id": "kebab-case-id", "title": "页面标题", "category": "concepts", "confidence": "extracted" } ],
+  "edges": [ { "source": "a", "target": "b", "broken": false } ],
+  "orphanIds": ["c"],
+  "pageCount": 42
+}
+```
+
+- `broken: true`：出链指向不存在的页面（断链）
+- `orphanIds`：既无出链也无入链的页面（孤儿）
+
+### 孤儿 / 断链在图谱中的表现
+
+- **断链**：红色**虚线**边，末端带红点（指向不存在的页面；仅渲染不参与力学布局，防止幽灵节点漂移）
+- **孤儿**：灰色节点（无任何连接）
+
+两种异常直接在图上一眼可辨，配合 `wiki_lint` 可定位并修复（补链或删页）。
+
+## 路线
 
 - ~~**检索**~~ ✅ 已上线：`wiki_query` 工具 + `wiki-query` skill 双通道分层检索
-- **图谱**：页面间 wikilink 知识图谱可视化与结构分析
+- ~~**图谱**~~ ✅ 已上线：`wiki_export` 工具导出交互图谱（graph.html）与结构化数据（graph.json）
 - **UI**：DSH 内的 wiki 浏览界面（目录 / 页面 / lint 报告面板）
 
 ## 开发
 
 ```bash
 npm run check   # typecheck + build
-node --test *.test.mjs   # 全部测试（46 例：smoke / vault-store / tools / ingest-delta / lint / retriever / wiki-query-tool / wiki-query-skill）
+node --test *.test.mjs   # 全部测试（53 例：smoke / vault-store / tools / ingest-delta / lint / retriever / graph-engine / wiki-export-tool / wiki-query-tool / wiki-query-skill）
 ```
 
 ## License
