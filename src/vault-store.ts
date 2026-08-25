@@ -16,10 +16,11 @@ const CATEGORIES: WikiCategory[] = ['concepts', 'entities', 'references', 'synth
 const SAFE_ID_RE = /^[a-z0-9\u4e00-\u9fff][a-z0-9\u4e00-\u9fff-]*$/
 
 export class VaultStore {
-  private readonly wikiRoot: string
+  constructor(private readonly vaultRoot: string) {}
 
-  constructor(private readonly vaultRoot: string) {
-    this.wikiRoot = join(vaultRoot, WIKI_DIR)
+  /** 只读暴露 wiki 根目录（<vaultRoot>/.wiki），供检索器读 index.md */
+  get wikiRoot(): string {
+    return join(this.vaultRoot, WIKI_DIR)
   }
 
   ensure(): void {
