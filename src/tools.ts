@@ -4,6 +4,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { VaultStore } from './vault-store.ts'
 import type { WikiCategory, Confidence } from './types.ts'
 import { lintVault } from './lint.ts'
+import { retrieve } from './retriever.ts'
 
 export function mountTools(ctx: Context, store: VaultStore): () => void {
   ctx.tools.register(defineTool({
@@ -133,6 +134,49 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
     },
     async execute() {
       return lintVault(store)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'wiki_query',
+    description: '从项目 wiki（.wiki/）检索知识。分层：L1 index 快速层（index-only 模式）→ L2 标题/标签 → L3 正文 → L4 wikilink 图谱邻居。只读，不修改任何页面。返回候选页面与引用，答案由调用者基于候选合成。',
+    parameters: {
+      query: { type: 'string', required: true, description: '检索词' },
+      mode: { type: 'string', enum: ['auto', 'index-only'], description: 'auto=分层检索；index-only=只查 index.md（快速）' },
+      maxCandidates: { type: 'number', description: '最多返回候选数（默认 10）' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          candidates: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                page: { type: 'string', required: true },
+                id: { type: 'string', required: true },
+                category: { type: 'string', required: true },
+                title: { type: 'string', required: true },
+                confidence: { type: 'string', required: true },
+                snippet: { type: 'string', required: true },
+                matchedBy: { type: 'string', required: true },
+              },
+            },
+          },
+          strategy: { type: 'string', required: true },
+          totalPages: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value) => value.candidates.length === 0
+        ? [{ type: 'text', text: `wiki 无匹配（${value.totalPages} 页）。可以说「把 XX 吸收进 wiki」来添加知识。` }]
+        : [{ type: 'text', text: `检索到 ${value.candidates.length} 条候选（${value.strategy}）：${value.candidates.map((c) => c.id).join('、')}` }],
+    },
+    async execute(args) {
+      return retrieve(store, args.query, {
+        mode: args.mode === 'index-only' ? 'index-only' : 'auto',
+        maxCandidates: args.maxCandidates ?? 10,
+      })
     },
   }))
 

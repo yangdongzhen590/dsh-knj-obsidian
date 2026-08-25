@@ -27,14 +27,14 @@ test('store 实例 + ensure 后 .wiki 可写（工具执行的存储基座）', 
   assert.ok(existsSync(join(dir, '.wiki', 'index.md')))
 })
 
-test('mountTools 注册 wiki_ingest + wiki_capture + wiki_lint 并返回 dispose', (t) => {
+test('mountTools 注册 wiki_ingest + wiki_capture + wiki_lint + wiki_query 并返回 dispose', (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const registered = []
   const fakeCtx = { tools: { register: (def) => registered.push(def) } }
   const dispose = mountTools(fakeCtx, store)
   const names = registered.map((d) => d.name)
-  assert.deepEqual(names.sort(), ['wiki_capture', 'wiki_ingest', 'wiki_lint'])
+  assert.deepEqual(names.sort(), ['wiki_capture', 'wiki_ingest', 'wiki_lint', 'wiki_query'])
   assert.equal(typeof dispose, 'function')
 })
 
