@@ -1,7 +1,7 @@
 // vault-store.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VaultStore } from './lib/vault-store.js'
@@ -89,4 +89,36 @@ test('listPages 返回全库页面清单', (t) => {
   const pages = store.listPages()
   assert.equal(pages.length, 2)
   assert.ok(pages.some((p) => p.id === 'a' && p.category === 'concepts'))
+})
+
+test('writePage 拒绝越权 id（路径穿越防护），readPage 对非法 id 返回 null', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.ensure()
+  assert.throws(() => store.writePage({
+    id: '../../evil', title: 'Evil', category: 'concepts', tags: [], source: 's',
+    confidence: 'extracted', created: 'c', updated: 'u', body: 'b',
+  }), /invalid page id/)
+  // 非法 id 不得触碰文件系统
+  assert.equal(store.readPage('../../evil', 'concepts'), null)
+  assert.ok(!existsSync(join(dir, '.wiki', 'concepts', 'evil.md')))
+  assert.ok(!existsSync(join(dir, 'evil.md')))
+})
+
+test('readPage 解析 CRLF 行尾的文件（Windows / git autocrlf）', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.ensure()
+  const raw = [
+    '---', 'id: crlf-page', 'title: CRLF 页', 'category: concepts', 'tags: []',
+    'source: docs/notes.md', 'confidence: extracted', 'created: c', 'updated: u', '---',
+    '', '## 正文', '第一行', '第二行', '',
+  ].join('\r\n')
+  writeFileSync(join(dir, '.wiki', 'concepts', 'crlf-page.md'), raw, 'utf8')
+  const back = store.readPage('crlf-page', 'concepts')
+  assert.ok(back)
+  assert.equal(back.title, 'CRLF 页')
+  assert.equal(back.source, 'docs/notes.md')
+  assert.match(back.body, /第一行/)
+  assert.match(back.body, /第二行/)
 })

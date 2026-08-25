@@ -71,8 +71,9 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
         if (res.created) created.push(p.id); else updated.push(p.id)
         produced.push(p.id)
       }
+      const hash = args.contentHash ?? store.sha256(args.source + JSON.stringify(args.pages))
       store.updateManifest(args.source, {
-        content_hash: store.sha256(args.source + JSON.stringify(args.pages)),
+        content_hash: hash,
         last_ingested: now,
         pages_produced: produced,
       })
@@ -94,7 +95,8 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
     },
     async execute(args) {
       const now = new Date().toISOString()
-      const id = args.title.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-').replace(/^-+|-+$/g, '') || `note-${Date.now()}`
+      // 严格 ASCII kebab-case：id 直接用作文件名（VaultStore 校验 /^[a-z0-9][a-z0-9-]*$/）
+      const id = args.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || `note-${Date.now()}`
       const cat = (args.category ?? 'references') as WikiCategory
       store.writePage({
         id, title: args.title, category: cat, tags: [], source: 'agent:capture',

@@ -1,12 +1,15 @@
 // src/vault-store.ts
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import type { WikiCategory, WikiPage, ManifestEntry, VaultManifest } from './types.ts'
 
 const WIKI_DIR = '.wiki'
 const MANIFEST_FILE = '.manifest.json'
 const CATEGORIES: WikiCategory[] = ['concepts', 'entities', 'references', 'synthesis', 'projects']
+
+/** 页面 id 的严格 kebab-case 模式：id 直接用作文件名，任何穿越字符（/ \ . ..）一律拒绝。 */
+const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]*$/
 
 export class VaultStore {
   private readonly wikiRoot: string
@@ -48,9 +51,25 @@ export class VaultStore {
     return join(this.wikiRoot, category, `${id}.md`)
   }
 
+  /**
+   * 校验 id 并返回受控路径：id 必须匹配严格 kebab-case，且解析后必须落在 wikiRoot 之内。
+   * 不合法返回 null（writePage 抛错、readPage 返回 null），绝不静默截断或放行。
+   */
+  private safePagePath(id: string, category: WikiCategory): string | null {
+    if (!SAFE_ID_RE.test(id)) return null
+    const file = join(this.wikiRoot, category, `${id}.md`)
+    const resolved = resolve(file)
+    const root = resolve(this.wikiRoot)
+    if (resolved !== root && !resolved.startsWith(root + sep)) return null
+    return file
+  }
+
   writePage(page: WikiPage): { created: boolean } {
     this.ensure()
-    const file = this.pagePath(page.id, page.category)
+    const file = this.safePagePath(page.id, page.category)
+    if (!file) {
+      throw new Error(`invalid page id "${page.id}": ids must match /^[a-z0-9][a-z0-9-]*$/ and stay inside the vault`)
+    }
     const created = !existsSync(file)
     const fm = [
       '---',
@@ -69,9 +88,11 @@ export class VaultStore {
   }
 
   readPage(id: string, category: WikiCategory): WikiPage | null {
-    const file = this.pagePath(id, category)
+    const file = this.safePagePath(id, category)
+    if (!file) return null
     if (!existsSync(file)) return null
-    const raw = readFileSync(file, 'utf8')
+    // 统一换行为 \n：CRLF 文件（Windows 编辑器 / git core.autocrlf）也能解析 frontmatter
+    const raw = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
     const m = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
     if (!m) return null
     const fm: Record<string, string> = {}
@@ -135,8 +156,11 @@ export class VaultStore {
         if (!f.endsWith('.md')) continue
         const full = join(dir, f)
         if (!statSync(full).isFile()) continue
-        const page = this.readPage(f.slice(0, -3), c)
+        const id = f.slice(0, -3)
+        const page = this.readPage(id, c)
+        // 无 frontmatter 的页面 readPage 返回 null，也要列入清单（lint 才能标记缺 frontmatter）
         if (page) out.push({ id: page.id, category: c, title: page.title })
+        else out.push({ id, category: c, title: id })
       }
     }
     return out

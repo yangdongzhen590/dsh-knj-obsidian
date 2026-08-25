@@ -89,8 +89,32 @@ test('wiki_ingest：不同 contentHash 不命中 → 重写页面 skipped:false'
   assert.deepEqual(res, { created: [], updated: ['rate-limiting'], skipped: false })
   const back = store.readPage('rate-limiting', 'concepts')
   assert.notEqual(back.updated, updated1) // 页面被重写
-  // manifest 被刷新为新的内容哈希（以当前 pages 计算）
-  assert.equal(store.manifestEntry(source).content_hash, store.sha256(source + JSON.stringify(pages)))
+  // manifest 被刷新为传入的 contentHash（显式提供的哈希优先于内部公式）
+  assert.equal(store.manifestEntry(source).content_hash, otherHash)
+})
+
+test('wiki_ingest：contentHash 原样入库，同 hash 二次 ingest 真正跳过', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const def = ingestDef(store)
+
+  const source = 'docs/input.md'
+  const pages = [{ id: 'rate-limiting', title: 'Rate Limiting', category: 'concepts', body: '## 核心\n429 要指数退避。' }]
+  // 真实源字节哈希：与内部公式 sha256(source + JSON.stringify(pages)) 不同，可区分新旧行为
+  const h = hash('real source bytes')
+
+  // 首次 ingest：contentHash 应原样写入 manifest（而不是被内部公式覆盖）
+  const res1 = await def.execute({ source, pages, contentHash: h }, EXEC)
+  assert.deepEqual(res1, { created: ['rate-limiting'], updated: [], skipped: false })
+  assert.equal(store.manifestEntry(source).content_hash, h)
+  const updated1 = store.readPage('rate-limiting', 'concepts').updated
+
+  await sleep(5)
+
+  // 再次 ingest：同 contentHash → 命中 manifest → 跳过，页面不被重写
+  const res2 = await def.execute({ source, pages, contentHash: h }, EXEC)
+  assert.deepEqual(res2, { created: [], updated: [], skipped: true })
+  assert.equal(store.readPage('rate-limiting', 'concepts').updated, updated1)
 })
 
 test('wiki_ingest：contentHash 但无 manifest 记录 → 正常 ingest 不跳过', async (t) => {

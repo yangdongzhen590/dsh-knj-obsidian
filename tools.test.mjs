@@ -102,7 +102,7 @@ test('wiki_ingest 校验必填参数（缺 source 报错）', async (t) => {
   await assert.rejects(def.execute({ pages: [] }, EXEC))
 })
 
-test('wiki_capture 沉淀单页（默认 references/，confidence=inferred）', async (t) => {
+test('wiki_capture 沉淀单页（默认 references/，confidence=inferred，id 为 ASCII kebab-case）', async (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const registered = []
@@ -110,9 +110,9 @@ test('wiki_capture 沉淀单页（默认 references/，confidence=inferred）', 
   mountTools(fakeCtx, store)
   const def = registered.find((d) => d.name === 'wiki_capture')
 
-  const r = await def.execute({ title: ' 关于 429 的总结 ', body: '知识内容：指数退避。' }, EXEC)
-  assert.equal(r.page, 'references/关于-429-的总结.md')
-  const raw = readFileSync(join(dir, '.wiki', 'references', '关于-429-的总结.md'), 'utf8')
+  const r = await def.execute({ title: ' Rate Limiting 总结 ', body: '知识内容：指数退避。' }, EXEC)
+  assert.equal(r.page, 'references/rate-limiting.md')
+  const raw = readFileSync(join(dir, '.wiki', 'references', 'rate-limiting.md'), 'utf8')
   assert.match(raw, /confidence: inferred/)
   assert.match(raw, /source: agent:capture/)
   assert.match(raw, /指数退避/)
