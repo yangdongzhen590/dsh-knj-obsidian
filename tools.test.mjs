@@ -52,7 +52,7 @@ test('wiki_ingest 落盘页面并更新 manifest（created/updated 分流）', a
     { id: 'billing', title: 'Billing', category: 'entities', body: '账单流程。' },
   ]
   const res = await def.execute({ source, pages }, EXEC)
-  assert.deepEqual(res, { created: ['rate-limiting', 'billing'], updated: [] })
+  assert.deepEqual(res, { created: ['rate-limiting', 'billing'], updated: [], skipped: false })
 
   // 页面与 frontmatter 落盘
   const raw = readFileSync(join(dir, '.wiki', 'concepts', 'rate-limiting.md'), 'utf8')
@@ -83,7 +83,7 @@ test('wiki_ingest 重写同 id 页面：保留 created、更新 updated', async 
 
   const second = { ...first, body: '## 核心\n429 要指数退避，且要有 jitter。' }
   const res = await def.execute({ source, pages: [second] }, EXEC)
-  assert.deepEqual(res, { created: [], updated: ['rate-limiting'] })
+  assert.deepEqual(res, { created: [], updated: ['rate-limiting'], skipped: false })
 
   const back = store.readPage('rate-limiting', 'concepts')
   assert.equal(back.created, createdAt) // created 保留
