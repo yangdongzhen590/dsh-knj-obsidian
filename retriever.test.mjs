@@ -122,6 +122,20 @@ test('L4 图谱遍历：query 无直接命中时返回相关节点的邻居', (t
   assert.ok(r.candidates.some((c) => c.id === 'rate-limiting' && c.matchedBy === 'graph'))
 })
 
+test('L4 图谱去重：两个正文命中共享同一邻居时该邻居只出现一次', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const now = '2026-08-25T00:00:00.000Z'
+  store.writePage({ id: 'alpha', title: 'Alpha', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: '共享目标词出现。参考 [[common]]。' })
+  store.writePage({ id: 'beta', title: 'Beta', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: '共享目标词也出现。参考 [[common]]。' })
+  store.writePage({ id: 'common', title: 'Common', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: '普通页面。' })
+  const r = retrieve(store, '目标词')
+  // 两个正文命中（alpha/beta）都出链 [[common]]，去重后 common 只能出现一次
+  const graph = r.candidates.filter((c) => c.matchedBy === 'graph')
+  assert.ok(graph.length >= 1, '应有图谱候选')
+  assert.equal(graph.filter((c) => c.id === 'common').length, 1, '共享邻居只出现一次')
+})
+
 test('linkedPages 返回页面出链 target 列表', (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))

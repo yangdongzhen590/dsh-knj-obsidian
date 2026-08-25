@@ -19,17 +19,19 @@ wiki 里是预合成、交叉引用的知识页。**本 skill 只读**：不得�
 1. 解析 vault 路径：当前项目根目录下找 `.wiki/`（`OBSIDIAN_VAULT_PATH` 或 `ls -a` 找 `.wiki`）。
 2. 若 `.wiki/index.md` 存在，先读它了解全库结构（快速层）。
 
-## 分层检索（命中即停）
+## 分层检索
 
-### L1 — index 快速层（≤1 次读）
-读 `index.md`，找包含查询词的行；命中即用，不必深入。
+### L1 — index 快速层（≤1 次读；等价于工具 mode=index-only）
+读 `index.md`，找包含查询词的行。**auto 模式下 L1 只是预热扫描**：命中后不要命中即停，
+仍继续 L2 用标题/标签核对更强者（与 `wiki_query` 工具 auto 模式一致——工具不从 index 起步，
+L2 才会产生候选）；只有当显式走 index-only 快速路径时，L1 命中才直接作为结果。
 
-### L2 — 标题 + 标签层（grep）
+### L2 — 标题 + 标签层（grep；命中即停）
 用 grep 在 `.wiki/*/` 下搜标题与 frontmatter 标签：
 ```bash
 grep -ri "<query>" .wiki/*/ --include="*.md" -l   # 或按需限定目录
 ```
-对命中文件，读 frontmatter 的 `title` / `tags` / `confidence`。
+对命中文件，读 frontmatter 的 `title` / `tags` / `confidence`。L2 命中后停止，不升 L3。
 
 ### L3 — 正文层（按需）
 L2 无果时，读候选文件正文找查询词；截取命中上下文 ≤200 字符作为 snippet。

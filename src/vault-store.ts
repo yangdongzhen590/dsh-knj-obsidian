@@ -170,4 +170,27 @@ export class VaultStore {
     }
     return out
   }
+
+  /**
+   * 只读列出页面清单：不调用 ensure()，不创建任何目录/文件。
+   * 分类目录缺失时跳过（全新 vault 上检索仍是零写入）。条目语义与 listPages()
+   * 完全一致，区别仅在于不触发 ensure()——供检索这类只读路径使用。
+   */
+  listPagesReadonly(): { id: string; category: WikiCategory; title: string }[] {
+    const out: { id: string; category: WikiCategory; title: string }[] = []
+    for (const c of CATEGORIES) {
+      const dir = join(this.wikiRoot, c)
+      if (!existsSync(dir)) continue
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith('.md')) continue
+        const full = join(dir, f)
+        if (!statSync(full).isFile()) continue
+        const id = f.slice(0, -3)
+        const page = this.readPage(id, c)
+        if (page) out.push({ id: page.id, category: c, title: page.title })
+        else out.push({ id, category: c, title: id })
+      }
+    }
+    return out
+  }
 }

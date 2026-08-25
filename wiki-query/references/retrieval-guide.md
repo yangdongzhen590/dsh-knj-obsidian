@@ -4,11 +4,13 @@
 
 - vault：项目根 `.wiki/`（纯 Markdown）
 - 可用工具：grep / glob / read（内置），无需插件工具
-- 分层原则：先便宜后贵，命中即停
+- 分层原则：先便宜后贵；L1 命中后仍继续 L2 核对更强者（等价于工具 auto 模式从 L2 开始），L2 命中即停
 
 ## 分层步骤
 
-1. **L1（index 快速层）**：读 `.wiki/index.md`，匹配查询词所在行。
+1. **L1（index 快速层）**：读 `.wiki/index.md`，匹配查询词所在行。auto 模式下这是预热扫描，
+   命中后继续 L2 核对更强者，不要命中即停；仅显式 index-only 快速路径才在 L1 命中即止
+   （等价于 `wiki_query` 工具 `mode=index-only`）。
 2. **L2（标题/标签层）**：`grep -rli "<query>" .wiki --include="*.md"` 得到文件列表，
    逐个读 frontmatter 的 title/tags 与查询词比对。
 3. **L3（正文层）**：对 L2 候选打开正文，定位查询词，截取上下文 ≤200 字符。

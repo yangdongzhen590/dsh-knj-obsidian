@@ -51,6 +51,21 @@ test('wiki_query 执行返回候选并零写入', async (t) => {
   assert.deepEqual(after, before, 'wiki_query 不得写入任何文件')
 })
 
+test('wiki_query 在全新 vault（未 ensure）上执行仍零写入', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-obsidian-qt3-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  // 故意不调用 store.ensure()：检索必须自足零写入，不能因 listPages 触发 ensure 创建目录
+  const store = new VaultStore(dir)
+  const ctx = makeCtx()
+  mountTools(ctx, store)
+  const tool = findTool(ctx, 'wiki_query')
+  assert.deepEqual(snapshot(dir), {}, '前置：vault 根必须为空')
+  const result = await tool.execute({ query: '任意查询', mode: 'auto' }, { signal: new AbortController().signal })
+  assert.deepEqual(snapshot(dir), {}, '全新 vault 上执行 wiki_query 不得创建任何文件/目录')
+  assert.equal(result.totalPages, 0, '全新 vault 无页面')
+  assert.deepEqual(result.candidates, [], '全新 vault 无候选')
+})
+
 function snapshot(root) {
   const out = {}
   const walk = (d) => {

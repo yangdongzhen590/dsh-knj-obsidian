@@ -33,7 +33,8 @@ export function retrieve(
   const mode = opts.mode ?? 'auto'
   const maxCandidates = opts.maxCandidates ?? 10
   const q = query.trim().toLowerCase()
-  const pages = store.listPages()
+  // 只读列举：检索不得触发 ensure()（零写入，全新 vault 也可直接检索）
+  const pages = store.listPagesReadonly()
   const totalPages = pages.length
 
   if (!q) return { candidates: [], strategy: 'empty-query', totalPages }
@@ -69,13 +70,17 @@ export function retrieve(
   // L4：对 L3 命中的每个页面，取其出链邻居作为关联候选（matchedBy: 'graph'）
   const byId = allPagesById(store)
   const graphHits: RetrievalCandidate[] = []
+  const seen = new Set<string>() // 多个正文命中共享同一邻居时只保留一份
   for (const hit of bodyHits) {
     for (const target of linkedPages(store, hit.id, hit.category)) {
       const tp = byId.get(target)
       if (!tp) continue
       if (bodyHits.some((h) => h.id === target)) continue // 已命中不重复
+      if (seen.has(target)) continue // 重复邻居去重
       const tpage = store.readPage(tp.id, tp.category)
-      if (tpage) graphHits.push({ ...candidate(tpage, tp.category, 'body'), matchedBy: 'graph' })
+      if (!tpage) continue
+      seen.add(target)
+      graphHits.push({ ...candidate(tpage, tp.category, 'body'), matchedBy: 'graph' })
     }
   }
 
@@ -152,6 +157,6 @@ export function linkedPages(store: VaultStore, id: string, category: WikiCategor
 
 function allPagesById(store: VaultStore): Map<string, { id: string; category: WikiCategory; title: string }> {
   const map = new Map<string, { id: string; category: WikiCategory; title: string }>()
-  for (const p of store.listPages()) map.set(p.id, p)
+  for (const p of store.listPagesReadonly()) map.set(p.id, p)
   return map
 }

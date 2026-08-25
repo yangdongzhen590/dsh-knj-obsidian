@@ -68,16 +68,18 @@ v2 检索基于同一 `.wiki/` 知识库，提供**双通道**能力，均**只�
 | 通道 | 触发方式 | 说明 |
 | --- | --- | --- |
 | `wiki_query` 工具 | agent 自动调用 | 内置于插件，DSH 启动即暴露。agent 被问到「我之前关于 X 踩过什么坑」「我了解 Y 吗」这类既有知识问题时自动调用它检索 `.wiki/`，再基于候选合成带引用的回答。 |
-| `wiki-query` skill | 独立 skill（fallback） | 随包分发的 skill（`wiki-query/SKILL.md` + `references/retrieval-guide.md`）。在工具不可用/受限的环境里，agent 按该 skill 用 grep / glob / read 完成同等分层检索，结果一致。 |
+| `wiki-query` skill | 独立 skill（fallback） | 随包分发的 skill（`wiki-query/SKILL.md` + `references/retrieval-guide.md`）。在工具不可用/受限的环境里，agent 按该 skill 用 grep / glob / read 完成同等分层检索（通道对齐关系见下）。 |
 
-### 分层检索策略（命中即停）
+### 分层检索策略
 
-`wiki_query` 与 `wiki-query` skill 共用同一套从便宜到贵、命中即停的分层策略：
+`wiki_query` 与 `wiki-query` skill 共用同一套从便宜到贵的分层层级（L1–L4），两者对 L1 的语义对齐如下：
 
-1. **L1 — index 快速层**：读 `.wiki/index.md`，匹配查询词所在行（`wiki_query` 的 `mode=index-only` 只做这一步）。
-2. **L2 — 标题 + 标签层**：grep 标题与 frontmatter 标签，读命中文件的 `title` / `tags` / `confidence`。
+1. **L1 — index 快速层**：读 `.wiki/index.md`，匹配查询词所在行。工具 `mode=index-only` 只做这一步；skill 在 auto 模式下把 L1 当作**预热扫描**，命中后仍继续 L2 核对更强者（工具 auto 模式不查 index，直接从 L2 开始）。
+2. **L2 — 标题 + 标签层**：grep 标题与 frontmatter 标签，读命中文件的 `title` / `tags` / `confidence`（命中即停，不升 L3）。
 3. **L3 — 正文层**：L2 无果时打开正文定位查询词，截取上下文 ≤200 字符作为 snippet。
 4. **L4 — 图谱邻居**：解析命中页的 `[[wikilink]]` 出链，取一跳邻居作为关联候选。
+
+通道对应关系：**工具 auto 模式 = L2→L3→L4**；**工具 `mode=index-only` = skill 的 L1 快速层**；**skill 完整流程 = 工具 auto 模式 + L1 预热扫描**。两通道在相同 vault 上对同一查询给出的候选集一致（skill 按上述语义执行时，L1 在 auto 下不产生候选，与工具一致）。
 
 答案由 agent 基于候选页合成，**必须带引用**（页面路径 + `confidence` 标记：extracted / inferred / ambiguous）。无匹配时返回「wiki 无匹配」，并建议把相关内容吸收进 wiki。
 
@@ -100,7 +102,7 @@ v2 检索基于同一 `.wiki/` 知识库，提供**双通道**能力，均**只�
 
 ```bash
 npm run check   # typecheck + build
-node --test *.test.mjs   # 全部测试（44 例：smoke / vault-store / tools / ingest-delta / lint / retriever / wiki-query-tool / wiki-query-skill）
+node --test *.test.mjs   # 全部测试（46 例：smoke / vault-store / tools / ingest-delta / lint / retriever / wiki-query-tool / wiki-query-skill）
 ```
 
 ## License
