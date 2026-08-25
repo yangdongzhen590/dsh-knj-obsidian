@@ -27,6 +27,13 @@ test('src 有 cordis 入口与类型文件', () => {
   assert.ok(existsSync(join(ROOT, 'src/types.ts')))
 })
 
+test('files 白名单含 wiki-query，且 skill 文件就位（v2 检索必须随包分发）', () => {
+  const pkg = JSON.parse(readPkg())
+  assert.ok(pkg.files.includes('wiki-query'), 'files 白名单必须包含 wiki-query 目录')
+  assert.ok(existsSync(join(ROOT, 'wiki-query/SKILL.md')))
+  assert.ok(existsSync(join(ROOT, 'wiki-query/references/retrieval-guide.md')))
+})
+
 function readPkg() { return readFile('package.json') }
 function readFile(rel) {
   return readFileSync(join(ROOT, rel), 'utf8')

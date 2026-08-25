@@ -1,6 +1,6 @@
 {
   "name": "dsh-knj-obsidian",
-  "version": "2026.8.251",
+  "version": "2026.8.252",
   "description": "DSH 内简化版 Obsidian：AI agent 知识库的构建、检索与图谱（v1 构建核心）。",
   "type": "module",
   "main": "lib/index.js",
@@ -18,7 +18,7 @@
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
     "./package.json": "./package.json"
   },
-  "files": ["lib", "src", "cordis.patch.yml", "README.md", "LICENSE"],
+  "files": ["lib", "src", "cordis.patch.yml", "wiki-query", "README.md", "LICENSE"],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.8"
