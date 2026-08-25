@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VaultStore } from './lib/vault-store.js'
 import { mountTools } from './lib/tools.js'
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 
 // 工具 body 不引用 exec；提供最小 stub 即可（ToolRunContext 契约由 registry 在真实环境注入）
 const EXEC = { deferContext() {}, concludeTurn() {} }
@@ -26,14 +27,14 @@ test('store 实例 + ensure 后 .wiki 可写（工具执行的存储基座）', 
   assert.ok(existsSync(join(dir, '.wiki', 'index.md')))
 })
 
-test('mountTools 注册 wiki_ingest + wiki_capture 并返回 dispose', (t) => {
+test('mountTools 注册 wiki_ingest + wiki_capture + wiki_lint 并返回 dispose', (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const registered = []
   const fakeCtx = { tools: { register: (def) => registered.push(def) } }
   const dispose = mountTools(fakeCtx, store)
   const names = registered.map((d) => d.name)
-  assert.deepEqual(names.sort(), ['wiki_capture', 'wiki_ingest'])
+  assert.deepEqual(names.sort(), ['wiki_capture', 'wiki_ingest', 'wiki_lint'])
   assert.equal(typeof dispose, 'function')
 })
 
@@ -115,4 +116,27 @@ test('wiki_capture 沉淀单页（默认 references/，confidence=inferred）', 
   assert.match(raw, /confidence: inferred/)
   assert.match(raw, /source: agent:capture/)
   assert.match(raw, /指数退避/)
+})
+
+test('wiki_lint 注册并返回 LintReport，输出通过 schema 校验', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  const fakeCtx = { tools: { register: (def) => registered.push(def) } }
+  mountTools(fakeCtx, store)
+  const def = registered.find((d) => d.name === 'wiki_lint')
+  assert.ok(def)
+
+  store.writePage({ id: 'a', title: 'A', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '参考 [[ghost-page]] 与 [[b]]' })
+  store.writePage({ id: 'b', title: 'B', category: 'entities', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: 'ok' })
+
+  const report = await def.execute({}, EXEC)
+  assert.deepEqual(report.brokenLinks, [{ from: 'a', target: 'ghost-page' }])
+  assert.deepEqual(report.orphans.sort(), ['a', 'b']) // 双向链接未织好前都算孤儿
+  assert.deepEqual(report.missingFrontmatter, [])
+  assert.equal(report.pageCount, 2)
+
+  // 输出契约：全部属性声明且 additionalProperties:false，LintReport 结构可被 registry 校验
+  const violations = validateJsonSchemaValue(def.output.schema, report)
+  assert.deepEqual(violations, [])
 })

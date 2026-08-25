@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { VaultStore } from './vault-store.ts'
 import type { WikiCategory, Confidence } from './types.ts'
+import { lintVault } from './lint.ts'
 
 export function mountTools(ctx: Context, store: VaultStore): () => void {
   ctx.tools.register(defineTool({
@@ -100,6 +101,36 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
         confidence: 'inferred', created: now, updated: now, body: args.body,
       })
       return { page: `${cat}/${id}.md` }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'wiki_lint',
+    description: '检查 wiki 健康度：孤儿页、断链（[[wikilink]] 指向不存在页）、缺 frontmatter。',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          orphans: { type: 'array', items: { type: 'string' }, required: true },
+          brokenLinks: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                from: { type: 'string', required: true },
+                target: { type: 'string', required: true },
+              },
+            },
+          },
+          missingFrontmatter: { type: 'array', items: { type: 'string' }, required: true },
+          pageCount: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: `lint：${value.pageCount} 页，孤儿 ${value.orphans.length}，断链 ${value.brokenLinks.length}，缺 frontmatter ${value.missingFrontmatter.length}` }],
+    },
+    async execute() {
+      return lintVault(store)
     },
   }))
 
