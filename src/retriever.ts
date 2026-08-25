@@ -11,7 +11,7 @@ export interface RetrievalCandidate {
   title: string
   confidence: Confidence
   snippet: string
-  matchedBy: 'title' | 'tag' | 'body'
+  matchedBy: 'title' | 'tag' | 'body' | 'graph' | 'index'
 }
 
 export interface RetrievalResult {
@@ -21,6 +21,9 @@ export interface RetrievalResult {
 }
 
 const MAX_SNIPPET = 200
+
+/** 解析 [[wikilink]]：剥离锚点（#…）与别名（|…），与 lint.ts 保持一致 */
+const WIKILINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g
 
 export function retrieve(
   store: VaultStore,
@@ -60,10 +63,24 @@ export function retrieve(
     const page = store.readPage(p.id, p.category)
     if (!page) continue
     const idx = page.body.toLowerCase().indexOf(q)
-    if (idx !== -1) bodyHits.push(candidate(page, p.category, 'body'))
+    if (idx !== -1) bodyHits.push(candidate(page, p.category, 'body', undefined, idx))
   }
 
-  return { candidates: bodyHits.slice(0, maxCandidates), strategy: 'title+tag+body', totalPages }
+  // L4：对 L3 命中的每个页面，取其出链邻居作为关联候选（matchedBy: 'graph'）
+  const byId = allPagesById(store)
+  const graphHits: RetrievalCandidate[] = []
+  for (const hit of bodyHits) {
+    for (const target of linkedPages(store, hit.id, hit.category)) {
+      const tp = byId.get(target)
+      if (!tp) continue
+      if (bodyHits.some((h) => h.id === target)) continue // 已命中不重复
+      const tpage = store.readPage(tp.id, tp.category)
+      if (tpage) graphHits.push({ ...candidate(tpage, tp.category, 'body'), matchedBy: 'graph' })
+    }
+  }
+
+  const all = [...bodyHits, ...graphHits]
+  return { candidates: all.slice(0, maxCandidates), strategy: bodyHits.length > 0 ? 'title+tag+body+graph' : 'title+tag+body', totalPages }
 }
 
 function indexOnly(store: VaultStore, q: string, max: number): RetrievalCandidate[] {
@@ -77,7 +94,7 @@ function indexOnly(store: VaultStore, q: string, max: number): RetrievalCandidat
         const id = m[1].trim()
         const page = store.readPage(id, 'concepts') ?? store.readPage(id, 'entities') ?? store.readPage(id, 'references') ?? store.readPage(id, 'synthesis') ?? store.readPage(id, 'projects')
         if (page) {
-          out.push(candidate(page, page.category, 'body'))
+          out.push(candidate(page, page.category, 'index', line.trim().slice(0, MAX_SNIPPET)))
           if (out.length >= max) break
         }
       }
@@ -88,22 +105,53 @@ function indexOnly(store: VaultStore, q: string, max: number): RetrievalCandidat
   return out
 }
 
-function candidate(page: { id: string; title: string; tags: string[]; confidence: Confidence; body: string }, category: WikiCategory, matchedBy: RetrievalCandidate['matchedBy']): RetrievalCandidate {
+function candidate(
+  page: { id: string; title: string; tags: string[]; confidence: Confidence; body: string },
+  category: WikiCategory,
+  matchedBy: RetrievalCandidate['matchedBy'],
+  snippetOverride?: string,
+  matchIndex?: number,
+): RetrievalCandidate {
   return {
     page: `${category}/${page.id}.md`,
     id: page.id,
     category,
     title: page.title,
     confidence: page.confidence,
-    snippet: snippet(page.body, matchedBy),
+    snippet: snippetOverride ?? snippet(page.body, matchedBy, matchIndex),
     matchedBy,
   }
 }
 
-function snippet(body: string, matchedBy: RetrievalCandidate['matchedBy']): string {
+function snippet(body: string, matchedBy: RetrievalCandidate['matchedBy'], matchIndex?: number): string {
   if (matchedBy === 'title' || matchedBy === 'tag') {
     const first = body.split('\n').find((l) => l.trim().length > 0) ?? ''
     return first.slice(0, MAX_SNIPPET)
   }
+  if (typeof matchIndex === 'number') {
+    // L3：以命中位置为中心的窗口（±100，收拢到正文边界，≤200 字符）
+    const start = Math.max(0, matchIndex - MAX_SNIPPET / 2)
+    return body.slice(start, start + MAX_SNIPPET)
+  }
   return body.slice(0, MAX_SNIPPET)
+}
+
+/**
+ * 返回页面正文中的出链 target 列表（[[b]]、[[c|别名]]、[[d#锚点]] 均归一为 id，
+ * 锚点与别名被剥离），供 L4 图谱遍历与跨页关联复用。
+ */
+export function linkedPages(store: VaultStore, id: string, category: WikiCategory): string[] {
+  const page = store.readPage(id, category)
+  if (!page) return []
+  const out: string[] = []
+  for (const m of page.body.matchAll(WIKILINK_RE)) {
+    out.push(m[1].trim())
+  }
+  return out
+}
+
+function allPagesById(store: VaultStore): Map<string, { id: string; category: WikiCategory; title: string }> {
+  const map = new Map<string, { id: string; category: WikiCategory; title: string }>()
+  for (const p of store.listPages()) map.set(p.id, p)
+  return map
 }

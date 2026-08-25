@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VaultStore } from './lib/vault-store.js'
-import { retrieve } from './lib/retriever.js'
+import { retrieve, linkedPages } from './lib/retriever.js'
 
 function makeVault() {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-obsidian-retriever-'))
@@ -85,4 +85,31 @@ test('maxCandidates 限制候选数', (t) => {
   seed(store)
   const r = retrieve(store, 'a', { maxCandidates: 1 })
   assert.ok(r.candidates.length <= 1)
+})
+
+test('L4 图谱遍历：query 无直接命中时返回相关节点的邻居', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const now = '2026-08-25T00:00:00.000Z'
+  store.writePage({ id: 'auth', title: 'Auth 认证', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: 'JWT 与 session 对比。参考 [[rate-limiting]] 与 [[orders]]。' })
+  store.writePage({ id: 'rate-limiting', title: 'Rate Limiting', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: '429 处理。参考 [[auth]]。' })
+  store.writePage({ id: 'orders', title: '订单', category: 'projects', tags: [], source: 's', confidence: 'inferred', created: now, updated: now, body: '订单流程。参考 [[rate-limiting]]。' })
+  const r = retrieve(store, 'JWT')
+  // query "JWT" 只在 auth 正文出现 → L3 命中 auth；它的邻居 rate-limiting 也应作为关联候选
+  const ids = r.candidates.map((c) => c.id)
+  assert.ok(ids.includes('auth'), '正文命中 auth')
+  assert.ok(ids.includes('rate-limiting'), 'auth 的一跳邻居应出现')
+  assert.ok(r.candidates.some((c) => c.id === 'rate-limiting' && c.matchedBy === 'graph'))
+})
+
+test('linkedPages 返回页面出链 target 列表', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const now = '2026-08-25T00:00:00.000Z'
+  store.writePage({ id: 'a', title: 'A', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: '参考 [[b]] 与 [[c|别名]] 和 [[d#锚点]]' })
+  store.writePage({ id: 'b', title: 'B', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: 'ok' })
+  store.writePage({ id: 'c', title: 'C', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: 'ok' })
+  store.writePage({ id: 'd', title: 'D', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body: 'ok' })
+  const links = linkedPages(store, 'a', 'concepts')
+  assert.deepEqual(links.sort(), ['b', 'c', 'd'])
 })
