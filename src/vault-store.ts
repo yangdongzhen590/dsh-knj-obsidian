@@ -72,7 +72,7 @@ export class VaultStore {
     this.ensure()
     const file = this.safePagePath(page.id, page.category)
     if (!file) {
-      throw new Error(`invalid page id "${page.id}": ids must match /^[a-z0-9][a-z0-9-]*$/ and stay inside the vault`)
+      throw new Error(`invalid page id "${page.id}": ids must match /^[a-z0-9\u4e00-\u9fff][a-z0-9\u4e00-\u9fff-]*$/ and stay inside the vault`)
     }
     const created = !existsSync(file)
     const fm = [
