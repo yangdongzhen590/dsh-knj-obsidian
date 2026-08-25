@@ -38,7 +38,11 @@ test('L1 index-only 模式只读 index.md 命中行', (t) => {
   writeFileSync(join(dir, '.wiki', 'index.md'), '# Wiki Index\n\n## 概念页\n- [[rate-limiting]]\n', 'utf8')
   const r = retrieve(store, 'rate-limiting', { mode: 'index-only' })
   assert.equal(r.strategy, 'index-only')
-  assert.ok(r.candidates.some((c) => c.page.includes('rate-limiting')), 'index-only 应从 index.md 命中')
+  const hit = r.candidates.find((c) => c.id === 'rate-limiting')
+  assert.ok(hit, 'index-only 应从 index.md 命中')
+  assert.ok(hit.page.includes('rate-limiting'))
+  assert.equal(hit.matchedBy, 'index', 'L1 命中应标记 matchedBy=index')
+  assert.equal(hit.snippet, '- [[rate-limiting]]', 'snippet 应为 index.md 命中行原文')
 })
 
 test('L2 标题匹配返回带 confidence 的候选', (t) => {
@@ -69,6 +73,22 @@ test('L3 正文匹配返回 snippet（截断 ≤200 字符）', (t) => {
   assert.equal(hit.matchedBy, 'body')
   assert.ok(hit.snippet.length <= 200, 'snippet 应截断')
   assert.ok(hit.snippet.includes('指数退避'))
+})
+
+test('L3 长正文命中：snippet 居中于命中位置而非正文头部', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const now = '2026-08-25T00:00:00.000Z'
+  // 命中词位于第 300 字符之后（超出旧 slice(0,200) 窗口，只有居中窗口能包含它）
+  const body = '甲'.repeat(300) + '目标词' + '甲'.repeat(300)
+  store.writePage({ id: 'longpage', title: '长文', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: now, updated: now, body })
+  const r = retrieve(store, '目标词')
+  const hit = r.candidates.find((c) => c.id === 'longpage')
+  assert.ok(hit, '正文命中应返回 longpage')
+  assert.equal(hit.matchedBy, 'body')
+  assert.ok(hit.snippet.length <= 200, 'snippet 应截断 ≤200')
+  assert.ok(hit.snippet.includes('目标词'), 'snippet 应包含命中词（居中窗口）')
+  assert.notEqual(hit.snippet, body.slice(0, 200), '居中窗口不应等于正文头部 200 字符')
 })
 
 test('L2 命中足够时不升 L3（strategy 为 title+tag）', (t) => {
