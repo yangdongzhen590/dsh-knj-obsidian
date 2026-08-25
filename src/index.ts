@@ -1,4 +1,7 @@
+// src/index.ts
 import type { Context } from '@deepseek-ai/cordis'
+import { VaultStore } from './vault-store.ts'
+import { mountTools } from './tools.ts'
 
 export const name = 'dsh-knj-obsidian'
 
@@ -9,7 +12,9 @@ export interface Config {
 
 export function apply(ctx: Context, _config?: Config): void {
   ctx.inject(['tools'], (hostCtx: Context) => {
-    // v1 工具在 Task 4-6 注册
-    return () => {}
+    const store = new VaultStore(process.cwd())
+    store.ensure()
+    const disposeTools = mountTools(hostCtx, store)
+    return () => disposeTools()
   })
 }

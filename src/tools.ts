@@ -1,0 +1,91 @@
+// src/tools.ts
+import type { Context } from '@deepseek-ai/cordis'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { VaultStore } from './vault-store.ts'
+import type { WikiCategory, Confidence } from './types.ts'
+
+export function mountTools(ctx: Context, store: VaultStore): () => void {
+  ctx.tools.register(defineTool({
+    name: 'wiki_ingest',
+    description: '把 agent 提取好的知识页写入项目 wiki（.wiki/）。入参 pages 为页面数组；source 为源材料标识。存在同 id 页面时合并正文（保留 frontmatter 的 created，更新 updated）。',
+    parameters: {
+      source: { type: 'string', required: true, description: '源材料标识：文件路径 / URL / agent:<source>' },
+      pages: {
+        type: 'array', required: true, description: '提取出的页面',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', required: true, description: 'kebab-case 稳定 id' },
+            title: { type: 'string', required: true },
+            category: { type: 'string', required: true, enum: ['concepts', 'entities', 'references', 'synthesis', 'projects'] },
+            tags: { type: 'array', items: { type: 'string' } },
+            confidence: { type: 'string', enum: ['extracted', 'inferred', 'ambiguous'] },
+            body: { type: 'string', required: true, description: 'markdown 正文，不含 frontmatter' },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { created: { type: 'array', items: { type: 'string' }, required: true }, updated: { type: 'array', items: { type: 'string' }, required: true } } },
+      render: (_args, value) => [{ type: 'text', text: `写入 wiki：新建 ${value.created.length} 页，更新 ${value.updated.length} 页` }],
+    },
+    async execute(args) {
+      const created: string[] = []
+      const updated: string[] = []
+      const now = new Date().toISOString()
+      const produced: string[] = []
+      for (const p of args.pages) {
+        const cat = p.category as WikiCategory
+        const conf = (p.confidence ?? 'extracted') as Confidence
+        const existing = store.readPage(p.id, cat)
+        const page = {
+          id: p.id,
+          title: p.title,
+          category: cat,
+          tags: p.tags ?? [],
+          source: args.source,
+          confidence: conf,
+          created: existing?.created ?? now,
+          updated: now,
+          body: p.body,
+        }
+        const res = store.writePage(page)
+        if (res.created) created.push(p.id); else updated.push(p.id)
+        produced.push(p.id)
+      }
+      store.updateManifest(args.source, {
+        content_hash: store.sha256(args.source + JSON.stringify(args.pages)),
+        last_ingested: now,
+        pages_produced: produced,
+      })
+      return { created, updated }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'wiki_capture',
+    description: '把当前讨论沉淀成一条知识页（quick 模式写入 references/ 单页）。',
+    parameters: {
+      title: { type: 'string', required: true },
+      body: { type: 'string', required: true, description: '声明式知识内容（非对话记录）' },
+      category: { type: 'string', enum: ['concepts', 'entities', 'references', 'synthesis', 'projects'] },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { page: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: `已沉淀到 ${value.page}` }],
+    },
+    async execute(args) {
+      const now = new Date().toISOString()
+      const id = args.title.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-').replace(/^-+|-+$/g, '') || `note-${Date.now()}`
+      const cat = (args.category ?? 'references') as WikiCategory
+      store.writePage({
+        id, title: args.title, category: cat, tags: [], source: 'agent:capture',
+        confidence: 'inferred', created: now, updated: now, body: args.body,
+      })
+      return { page: `${cat}/${id}.md` }
+    },
+  }))
+
+  return () => {}
+}
