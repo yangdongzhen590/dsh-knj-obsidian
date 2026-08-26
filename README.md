@@ -2,7 +2,7 @@
 
 DSH（DeepSeek Harness）内简化版 Obsidian：为 AI agent 提供项目级知识库（wiki）的**构建**能力。agent 通过工具把对话、文档、网页等源材料蒸馏为结构化知识页，落盘到项目根目录的 `.wiki/`，形成可复用、可维护的知识资产。
 
-当前版本为 **v1 构建核心 + v2 检索 + v3 图谱导出**：写入侧（ingest / capture / lint）已完整；检索侧提供 `wiki_query` 工具与 `wiki-query` skill 双通道（见下文「v2：检索」）；图谱侧提供 `wiki_export` 工具导出交互图谱与结构化图数据（见下文「v3：图谱导出」）；UI 仍在路线中。
+当前版本为 **v1 构建核心 + v2 检索 + v3 图谱导出 + v4 UI**：写入侧（ingest / capture / lint）已完整；检索侧提供 `wiki_query` 工具与 `wiki-query` skill 双通道（见下文「v2：检索」）；图谱侧提供 `wiki_export` 工具导出交互图谱与结构化图数据（见下文「v3：图谱导出」）；UI 侧提供右侧边栏"知识库"标签 + 笔记/图谱工作台（见下文「v4：UI」）。
 
 ## 安装方式
 
@@ -13,7 +13,7 @@ DSH（DeepSeek Harness）内简化版 Obsidian：为 AI agent 提供项目级知
 npm pack
 
 # 2. 在插件目录内执行：安装到 DSH 的 web profile
-dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.254.tgz
+dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.257.tgz
 
 # 3. 重启 DSH，确认宿主日志无 dsh-knj-obsidian 相关报错
 ```
@@ -136,17 +136,31 @@ agent 被问到「导出 wiki 图谱」「看看知识库的结构/关联」「�
 
 两种异常直接在图上一眼可辨，配合 `wiki_lint` 可定位并修复（补链或删页）。
 
+## v4：UI
+
+DSH Web 界面右侧边栏新增"**知识库**"标签（better-sidebar），无需离开对话即可浏览与管理知识库：
+
+- **浏览**：按分类（概念/实体/参考/综合/项目）分组的 vault 树；点击笔记 → 主区域打开"笔记"工作台标签（markdown 渲染 + wikilink 跳转 + frontmatter 信息）
+- **搜索**：顶部搜索框，回车检索（复用 v2 分层检索内核），结果带 snippet 与 confidence；可 ← 返回
+- **lint 徽标**：显示页数与健康度（孤儿/断链/缺 frontmatter 计数），绿/琥珀/红三态
+- **图谱**：浏览/图谱切换，内嵌力导向交互图谱（复用 v3 图谱数据；点击节点打开笔记）
+- **空态引导**：vault 为空时提示"对 agent 说『把 XX 吸收进 wiki』开始"
+
+后端提供 `/api/obsidian-wiki/*` 只读端点（pages / page / search / graph / lint），全部复用 v1-v3 内核（VaultStore / retrieve / buildGraph / lintVault），与 agent 工具同源。
+
 ## 路线
 
 - ~~**检索**~~ ✅ 已上线：`wiki_query` 工具 + `wiki-query` skill 双通道分层检索
 - ~~**图谱**~~ ✅ 已上线：`wiki_export` 工具导出交互图谱（graph.html）与结构化数据（graph.json）
-- **UI**：DSH 内的 wiki 浏览界面（目录 / 页面 / lint 报告面板）
+- ~~**UI**~~ ✅ 已上线：右侧边栏"知识库"标签 + 笔记/图谱工作台（v4）
+- **编辑**：笔记编辑模式（v5 候选）
+- **历史会话挖掘**：DSH 会话 → 知识页（v5 候选）
 
 ## 开发
 
 ```bash
 npm run check   # typecheck + build
-node --test *.test.mjs   # 全部测试（53 例：smoke / vault-store / tools / ingest-delta / lint / retriever / graph-engine / wiki-export-tool / wiki-query-tool / wiki-query-skill）
+node --test *.test.mjs   # 全部测试（74 例：smoke / vault-store / tools / ingest-delta / lint / retriever / graph-engine / wiki-export-tool / wiki-query-tool / wiki-query-skill / routes / client-build / client-api / markdown / graph-view）
 ```
 
 ## License
