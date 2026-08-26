@@ -11,6 +11,9 @@ export function SearchBox({ onResult }: { onResult: (c: SearchCandidate[]) => vo
     try {
       const r = await fetchSearch(q)
       onResult(r.candidates)
+    } catch {
+      // 搜索失败：降级为空结果，避免未处理拒绝与静默失败
+      onResult([])
     } finally {
       setBusy(false)
     }

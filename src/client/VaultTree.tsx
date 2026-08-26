@@ -8,12 +8,17 @@ const CATEGORY_LABELS: Record<string, string> = {
 export function VaultTree({ onOpen }: { onOpen: (page: PageSummary) => void }) {
   const [pages, setPages] = useState<PageSummary[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
-    fetchPages().then((r) => setPages(r.pages)).catch((e) => setError(String(e)))
+    fetchPages()
+      .then((r) => { setPages(r.pages); setLoaded(true) })
+      .catch((e) => { setError(String(e)); setLoaded(true) })
   }, [])
 
   if (error) return <div style={{ color: '#f87171', fontSize: 12 }}>加载失败：{error}</div>
+  // 三态：加载中不闪空态引导
+  if (!loaded) return <div style={{ padding: 16, fontSize: 13, color: '#6b7280', textAlign: 'center' }}>加载中…</div>
   if (pages.length === 0) {
     return <div style={{ padding: 16, fontSize: 13, color: '#9ca3af', textAlign: 'center' }}>
       知识库还是空的。<br />对 agent 说「把 XX 吸收进 wiki」开始。
