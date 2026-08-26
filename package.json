@@ -10,15 +10,16 @@
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
-      "inject": ["@deepseek-ai/dsh-client-runtime"],
+      "inject": ["@deepseek-ai/dsh-client-runtime", "dsh-better-sidebar"],
       "platform": "web"
     }
   },
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./client": { "default": "./client/client.js" },
     "./package.json": "./package.json"
   },
-  "files": ["lib", "src", "cordis.patch.yml", "wiki-query", "README.md", "LICENSE"],
+  "files": ["lib", "src", "client", "cordis.patch.yml", "wiki-query", "README.md", "LICENSE"],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.8"
@@ -29,13 +30,22 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.8",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.8",
     "@types/node": "^22.0.0",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "dsh-better-sidebar": "^0.14.0",
+    "react": "^18.3.1",
+    "react-dom": "~18.3.1",
+    "tsdown": "^0.22.0",
     "typescript": "^5.5.0"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
+    "build:client": "tsdown -c tsdown.config.ts",
+    "check:client": "tsc -p tsconfig.client.json --noEmit",
     "check": "npm run typecheck && npm run build"
   }
 }

@@ -15,5 +15,5 @@
     "skipLibCheck": true
   },
   "include": ["src"],
-  "exclude": ["tests", "lib"]
+  "exclude": ["tests", "lib", "src/client"]
 }
