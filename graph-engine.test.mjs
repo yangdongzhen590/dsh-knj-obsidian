@@ -88,3 +88,15 @@ test('exportGraphHtml 空图也产出有效 HTML', (t) => {
   assert.ok(scriptMatch, '空图也应包含内联脚本')
   assert.doesNotThrow(() => new Function(scriptMatch[1]), '空图内联脚本应可解析')
 })
+
+test('exportGraphHtml 大 vault（>500 节点）附加图谱较大降级提示', () => {
+  // 合成 GraphData：501 个节点，直接调用 exportGraphHtml（无需 VaultStore）
+  const nodes = Array.from({ length: 501 }, (_, i) => ({ id: 'n' + i, title: 'N' + i, category: 'concepts', confidence: 'extracted' }))
+  const g = { nodes, edges: [], orphanIds: [], pageCount: 501 }
+  const html = exportGraphHtml(g)
+  assert.ok(html.includes('图谱较大'), '>500 节点应提示图谱较大')
+  assert.ok(html.includes('501 节点'), '节点计数应正确显示')
+  // 反例：小图谱不应出现降级提示
+  const small = exportGraphHtml({ nodes: [{ id: 'a', title: 'A', category: 'concepts', confidence: 'extracted' }], edges: [], orphanIds: [], pageCount: 1 })
+  assert.ok(!small.includes('图谱较大'), '小图谱不应提示性能受限')
+})

@@ -125,7 +125,7 @@ export function exportGraphHtml(graph: GraphData): string {
 <body>
 <svg id="graph" viewBox="0 0 1200 800"></svg>
 <div id="legend"><span class="legend-item"><span class="dot" style="background:${CATEGORY_COLORS.concepts}"></span>概念</span><span class="legend-item"><span class="dot" style="background:${CATEGORY_COLORS.entities}"></span>实体</span><span class="legend-item"><span class="dot" style="background:${CATEGORY_COLORS.references}"></span>参考</span><span class="legend-item"><span class="dot" style="background:${CATEGORY_COLORS.synthesis}"></span>综合</span><span class="legend-item"><span class="dot" style="background:${CATEGORY_COLORS.projects}"></span>项目</span><span class="legend-item"><span class="dot" style="border:1px dashed #f87171;background:transparent"></span>断链</span><span class="legend-item"><span class="dot" style="background:#374151"></span>孤儿</span></div>
-<div id="info">${graph.nodes.length} 节点 · ${graph.edges.length} 边 · 拖拽/滚轮缩放</div>
+<div id="info">${graph.nodes.length} 节点 · ${graph.edges.length} 边 · 拖拽/滚轮缩放${graph.nodes.length > 500 ? ' · 图谱较大（>500 节点），性能受限' : ''}</div>
 <div id="tooltip"></div>
 <script>
 const NODES = ${nodesJson};

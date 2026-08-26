@@ -63,3 +63,18 @@ test('wiki_export json 模式写入 graph.json', async (t) => {
   assert.equal(json.nodes.length, 1)
   assert.equal(json.edges.length, 0)
 })
+
+test('wiki_export render：<2 页 vault 提示图谱过小（导出仍成功）', () => {
+  const ctx = makeCtx()
+  const store = new VaultStore(mkdtempSync(join(tmpdir(), 'dsh-obsidian-wx4-')))
+  mountTools(ctx, store)
+  const tool = findTool(ctx, 'wiki_export')
+  // render 为纯函数 (_args, value) => blocks：直接以 <2 页的伪造结果调用
+  const tiny = tool.output.render({ format: 'html' }, { file: 'wiki-export/graph.html', nodeCount: 1, edgeCount: 0 })
+  const tinyText = tiny.map((b) => b.text).join('')
+  assert.ok(tinyText.includes('图谱已导出：1 节点 / 0 边'), '导出仍应报告成功')
+  assert.ok(tinyText.includes('图谱过小（<2 页），图谱意义有限'), '应提示图谱过小')
+  // 反例：≥2 页不应出现图谱过小提示
+  const ok = tool.output.render({ format: 'html' }, { file: 'wiki-export/graph.html', nodeCount: 2, edgeCount: 1 })
+  assert.ok(!ok.map((b) => b.text).join('').includes('图谱过小'), '≥2 页不应提示图谱过小')
+})

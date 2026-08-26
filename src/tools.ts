@@ -198,7 +198,12 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
           edgeCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `图谱已导出：${value.nodeCount} 节点 / ${value.edgeCount} 边 → ${value.file}` }],
+      render: (_args, value) => {
+        const base = `图谱已导出：${value.nodeCount} 节点 / ${value.edgeCount} 边 → ${value.file}`
+        // FM1：空 vault / <2 页 → 导出仍成功，但附加图谱过小提示（spec 失败模式承诺）
+        const hint = value.nodeCount < 2 ? ' 图谱过小（<2 页），图谱意义有限——先吸收几份文档再导出' : ''
+        return [{ type: 'text', text: base + hint }]
+      },
     },
     async execute(args) {
       const format = args.format === 'json' ? 'json' : 'html'
