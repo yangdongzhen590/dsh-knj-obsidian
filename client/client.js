@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
 				return ctx.betterSidebar.registerTab({
 					id: "dsh-knj-obsidian",
 					title: "知识库",
-					render: () => (0, react.createElement)(WikiSidebar)
+					component: () => (0, react.createElement)(WikiSidebar)
 				});
 			}, "dsh-knj-obsidian: sidebar tab");
 		}

@@ -18,7 +18,8 @@ interface BetterSidebarService {
     id: string
     title: string | (() => string)
     icon?: unknown
-    render: (props: unknown) => unknown
+    /** The host renders `descriptor.component` (TabDescriptor.component in 0.14.0). */
+    component: (props: unknown) => unknown
   }): () => void
 }
 
@@ -36,7 +37,7 @@ export function apply(ctx: ClientContext): void {
     return ctx.betterSidebar.registerTab({
       id: 'dsh-knj-obsidian',
       title: '知识库',
-      render: () => h(WikiSidebar),
+      component: () => h(WikiSidebar),
     })
   }, 'dsh-knj-obsidian: sidebar tab')
 }

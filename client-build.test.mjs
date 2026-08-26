@@ -23,3 +23,14 @@ test('package.json 声明 client 入口与构建脚本', () => {
   assert.equal(pkg.exports['./client'].default, './client/client.js')
   assert.ok(pkg.scripts['build:client'])
 })
+
+test('registerTab 描述符使用宿主 TabDescriptor.component 字段（dsh-better-sidebar 0.14.0 无 render 字段）', () => {
+  // 宿主 Sidebar.tsx 渲染 descriptor.component；传 render 会被静默忽略，
+  // 标签页打开时因组件缺失而报错。源码与构建产物都必须用 component。
+  const src = readFileSync(join(ROOT, 'src/client/index.ts'), 'utf8')
+  assert.match(src, /component:\s*\(\)\s*=>/, 'registerTab 必须以 component 字段提供组件')
+  assert.doesNotMatch(src, /render:/, 'TabDescriptor（0.14.0）没有 render 字段')
+  const bundle = readFileSync(join(ROOT, 'client/client.js'), 'utf8')
+  assert.match(bundle, /component:/, '构建产物必须携带 component 字段')
+  assert.doesNotMatch(bundle, /render:/, '构建产物不得使用 render 字段')
+})
