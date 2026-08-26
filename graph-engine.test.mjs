@@ -19,12 +19,13 @@ const NOW = '2026-08-26T00:00:00.000Z'
 test('buildGraph 产出节点与边（含断链标记）', (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
-  store.writePage({ id: 'auth', title: 'Auth 认证', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: NOW, updated: NOW, body: 'JWT 与 session。参考 [[rate-limiting]] 与 [[ghost-page]]。' })
+  store.writePage({ id: 'auth', title: 'Auth 认证', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: NOW, updated: NOW, body: 'JWT 与 session。参考 [[rate-limiting]]、[[ghost-page]] 与 [[pricing]]。' })
   store.writePage({ id: 'rate-limiting', title: 'Rate Limiting', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: NOW, updated: NOW, body: '429 处理。参考 [[auth|认证]] 与 [[ghost-page#状态]]。' })
   store.writePage({ id: 'orders', title: '订单', category: 'projects', tags: [], source: 's', confidence: 'inferred', created: NOW, updated: NOW, body: '订单流程。' })
+  store.writePage({ id: 'pricing', title: '定价', category: 'references', tags: [], source: 's', confidence: 'inferred', created: NOW, updated: NOW, body: '定价策略。' })
   const g = buildGraph(store)
-  assert.equal(g.pageCount, 3)
-  assert.equal(g.nodes.length, 3)
+  assert.equal(g.pageCount, 4)
+  assert.equal(g.nodes.length, 4)
   // auth → rate-limiting（正常边）
   assert.ok(g.edges.some((e) => e.source === 'auth' && e.target === 'rate-limiting' && e.broken === false), 'auth→rate-limiting 应存在')
   // auth → ghost-page（断链）
@@ -33,6 +34,9 @@ test('buildGraph 产出节点与边（含断链标记）', (t) => {
   assert.ok(g.edges.some((e) => e.source === 'rate-limiting' && e.target === 'auth'), '别名/锚点语法应剥离')
   // orders 无出链也无入链 → 孤儿（严格语义：无出链且无入链；rate-limiting 被 auth 引用 → 非孤儿）
   assert.deepEqual(g.orphanIds, ['orders'])
+  // pricing 仅有入链（auth → pricing）、无出链：严格语义下不是孤儿（有入链），
+  // 宽松语义（无出链即孤儿）下会是孤儿 → 此断言区分两种语义
+  assert.ok(!g.orphanIds.includes('pricing'), '仅有入链的页不是孤儿（严格语义）')
   // 节点元数据
   const authNode = g.nodes.find((n) => n.id === 'auth')
   assert.equal(authNode.title, 'Auth 认证')

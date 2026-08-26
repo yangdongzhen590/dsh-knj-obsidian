@@ -185,7 +185,7 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
 
   ctx.tools.register(defineTool({
     name: 'wiki_export',
-    description: '把 wiki 的 wikilink 图谱导出为 graph.json（结构化数据）或 graph.html（单文件交互可视化，浏览器可开）。写入 <vault>/wiki-export/。',
+    description: '把 wiki 的 wikilink 图谱导出为 graph.json（结构化数据）或 graph.html（单文件交互可视化，浏览器可开）。写入 <项目根>/.wiki/wiki-export/，返回路径相对 .wiki/。',
     parameters: {
       format: { type: 'string', enum: ['html', 'json'], description: 'html=交互图谱；json=结构化图数据' },
     },
