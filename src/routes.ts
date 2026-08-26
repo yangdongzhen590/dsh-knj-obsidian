@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { VaultStore } from './vault-store.ts'
 import { retrieve } from './retriever.ts'
 import { buildGraph } from './graph-engine.ts'
+import { lintVault } from './lint.ts'
 
 export interface WebServerService {
   register(route: {
@@ -63,6 +64,10 @@ export function mountWikiRoutes(host: WikiHost, store: VaultStore): () => void {
       }
       if (path === `${BASE}/graph`) {
         sendJson(response, 200, buildGraph(store))
+        return
+      }
+      if (path === `${BASE}/lint`) {
+        sendJson(response, 200, lintVault(store))
         return
       }
       sendJson(response, 404, { error: 'not found' })

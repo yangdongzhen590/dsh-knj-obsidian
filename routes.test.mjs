@@ -103,3 +103,13 @@ test('GET /graph 复用 buildGraph 内核', async (t) => {
   assert.ok(result.edges.some((e) => e.source === 'rate-limiting' && e.target === 'orders'))
   assert.equal(result.pageCount, 2)
 })
+
+test('GET /lint 返回健康报告', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const { host, handlers } = makeHost()
+  mountWikiRoutes(host, store)
+  const result = await req(handlers, '/api/obsidian-wiki/lint')
+  assert.equal(result.pageCount, 2)
+  assert.ok(Array.isArray(result.orphans))
+})
