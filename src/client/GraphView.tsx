@@ -1,26 +1,30 @@
 /**
- * 图谱视图：拉取 /api/obsidian-wiki/graph，用力导向布局（斥力 + 弹簧力）渲染进 <svg>。
- * 节点按 category 着色，孤儿灰色，断链红色虚线；点击节点回调 onOpenNote 打开笔记。
- *
- * 安全：所有用户可控字段（节点 id/title/category）进入 innerHTML 前一律经 esc()
- * 转义（含属性值场景的引号）——含 <script> 的标题只会以实体形式出现，无脚本执行面。
+ * 图谱视图（设计 v2）：力导向布局渲染进 <svg>。
+ * - 节点按 category 着色（CSS 类 → 宿主令牌，浅/深主题自适应），孤儿灰色，断链红色虚线
+ * - 顶部统计 + 图例 chips；点击节点回调 onOpenNote 打开笔记
+ * - 安全：用户可控字段（id/title/category）进入 innerHTML 前一律经 esc() 转义
  */
 import { useEffect, useRef, useState } from 'react'
+import { IconGraph, IconRefresh } from './icons.tsx'
 
 interface GraphNode { id: string; title: string; category: string; confidence: string }
 interface GraphEdge { source: string; target: string; broken: boolean }
 interface GraphData { nodes: GraphNode[]; edges: GraphEdge[]; orphanIds: string[]; pageCount: number }
 
-const CATEGORY_COLORS: Record<string, string> = {
-  concepts: '#3b82f6', entities: '#22c55e', references: '#f97316',
-  synthesis: '#a855f7', projects: '#6b7280',
-}
-
-// innerHTML 注入防护：Record 索引签名满足 strict noImplicitAny（brief 的字面量对象
-// 按 string 键索引会报 TS7053），语义不变：< > & " 全部转为实体。
+// innerHTML 注入防护：Record 索引签名满足 strict noImplicitAny；语义不变：< > & " 全部转为实体。
 const ESC_MAP: Record<string, string> = { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }
 function esc(s: string): string {
   return s.replace(/[<>&"]/g, (c) => ESC_MAP[c] ?? c)
+}
+
+/** category → 节点 CSS 类（颜色由 styles.ts 令牌驱动） */
+const CATEGORY_CLASS: Record<string, string> = {
+  concepts: 'knj-graph-node--concepts', entities: 'knj-graph-node--entities',
+  references: 'knj-graph-node--references', synthesis: 'knj-graph-node--synthesis', projects: 'knj-graph-node--projects',
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  concepts: '概念', entities: '实体', references: '参考', synthesis: '综合', projects: '项目',
 }
 
 export function GraphView({ onOpenNote }: { onOpenNote: (id: string, category: string, title: string) => void }) {
@@ -85,13 +89,13 @@ export function GraphView({ onOpenNote }: { onOpenNote: (id: string, category: s
     const paint = () => {
       let out = ''
       for (const e of edges) {
-        out += `<line x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}" stroke="${e.broken ? '#f87171' : '#4b5563'}" stroke-width="1.5"${e.broken ? ' stroke-dasharray="4 3"' : ''}/>`
+        out += `<line x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}" class="knj-graph-edge${e.broken ? ' knj-graph-edge--broken' : ''}" stroke-width="1.5"/>`
       }
       for (const n of nodes) {
-        const fill = orphans.has(n.id) ? '#374151' : (CATEGORY_COLORS[n.category] ?? '#6b7280')
+        const cls = orphans.has(n.id) ? 'knj-graph-node--orphan' : (CATEGORY_CLASS[n.category] ?? 'knj-graph-node--muted')
         out += `<g data-id="${esc(n.id)}" data-category="${esc(n.category)}" data-title="${esc(n.title)}" style="cursor:pointer">`
-        out += `<circle cx="${n.x}" cy="${n.y}" r="9" fill="${fill}"/>`
-        out += `<text x="${n.x + 12}" y="${n.y + 4}" font-size="10" fill="#e5e7eb">${esc(n.title)}</text>`
+        out += `<circle cx="${n.x}" cy="${n.y}" r="8" class="knj-graph-node ${cls}"/>`
+        out += `<text x="${n.x + 12}" y="${n.y + 4}" class="knj-graph-label">${esc(n.title)}</text>`
         out += `</g>`
       }
       svg.innerHTML = out
@@ -108,15 +112,30 @@ export function GraphView({ onOpenNote }: { onOpenNote: (id: string, category: s
     return () => { cancelAnimationFrame(raf); svg.removeEventListener('click', onClick) }
   }, [graph, onOpenNote])
 
-  if (error) return <div style={{ padding: 16, color: '#f87171' }}>图谱加载失败：{error}</div>
-  if (!graph) return <div style={{ padding: 16, color: '#9ca3af' }}>图谱加载中…</div>
-  if (graph.nodes.length < 2) return <div style={{ padding: 24, color: '#9ca3af', textAlign: 'center' }}>
-    图谱过小（{graph.nodes.length} 节点）——先吸收几份文档，图谱就会长出来。
-  </div>
+  if (error) return <div className="knj-error"><IconRefresh size={14} />图谱加载失败：{error}</div>
+  if (!graph) return <div className="knj-loading"><span className="knj-spinner"><IconRefresh size={14} /></span>图谱加载中…</div>
+  if (graph.nodes.length < 2) {
+    return <div className="knj-empty">
+      <span className="knj-empty__icon"><IconGraph size={30} /></span>
+      <div>图谱还太小（{graph.nodes.length} 节点）</div>
+      <div>先吸收几份文档，图谱就会长出来。</div>
+    </div>
+  }
 
-  return <div style={{ padding: 12 }}>
-    <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>{graph.nodes.length} 节点 · {graph.edges.length} 边 · 点击节点打开笔记</div>
-    <svg ref={svgRef} width={600} height={400} viewBox="0 0 600 400"
-      style={{ background: '#111827', borderRadius: 8, width: '100%', height: 'auto' }} />
+  const legendKeys = [...new Set(graph.nodes.map((n) => n.category))]
+
+  return <div className="knj-col" style={{ padding: '4px 12px 12px' }}>
+    <div className="knj-graph-head">
+      <span className="knj-graph-stats">{graph.nodes.length} 节点 · {graph.edges.length} 边</span>
+      <span className="knj-statusbar__spacer" />
+      <span className="knj-pop__hint">点击节点打开笔记</span>
+    </div>
+    <div className="knj-graph-legend">
+      {legendKeys.map((cat) => (
+        <span key={cat} className={`knj-chip knj-chip--${cat}`}>{CATEGORY_LABELS[cat] ?? cat}</span>
+      ))}
+      {graph.orphanIds.length > 0 && <span className="knj-chip knj-chip--neutral">孤儿 {graph.orphanIds.length}</span>}
+    </div>
+    <svg ref={svgRef} width={600} height={400} viewBox="0 0 600 400" className="knj-graph-svg" />
   </div>
 }

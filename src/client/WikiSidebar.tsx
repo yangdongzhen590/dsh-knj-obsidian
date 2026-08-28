@@ -1,54 +1,86 @@
 /**
- * 知识库边栏标签（A3 混合形态入口）：顶部搜索 + lint 徽标，浏览/图谱切换。
- * 浏览 = 按 category 分组的 vault 树（或搜索结果，可返回）；图谱 = 交互图谱。
- * 点击笔记/图谱节点 → openNote（由 index.ts 注入 openTab 到主区域工作台标签）。
+ * 知识库边栏标签（设计 v2）：
+ * - 顶部：vault 头部（当前库身份 + 切换 + 新建/挂接/移除，v7）
+ * - 搜索（图标输入框 + 加载态）
+ * - 浏览/图谱分段切换；内容区随搜索结果 / 树 / 图谱切换
+ * - 底部状态条（LintPanel）：页数 + 健康度；「问题」「工具」面板展开
  */
 import { useState } from 'react'
 import { VaultTree } from './VaultTree.tsx'
 import { SearchBox } from './SearchBox.tsx'
-import { LintBadge } from './LintBadge.tsx'
+import { LintPanel } from './LintPanel.tsx'
 import { GraphView } from './GraphView.tsx'
+import { VaultHeader, type WorkspaceFace } from './VaultHeader.tsx'
+import { IconBook, IconClose, IconGraph } from './icons.tsx'
 import type { SearchCandidate } from './api.ts'
 
-export function WikiSidebar({ openNote }: { openNote: (id: string, category: string, title: string) => void }) {
+export function WikiSidebar({ openNote, workspaces }: {
+  openNote: (id: string, category: string, title: string) => void
+  workspaces?: WorkspaceFace
+}) {
   const [results, setResults] = useState<SearchCandidate[] | null>(null)
   const [view, setView] = useState<'browse' | 'graph'>('browse')
+  // v7：库切换时自增，强制图谱重挂载（取数当前库）
+  const [vaultVersion, setVaultVersion] = useState(0)
 
-  const tabStyle = (active: boolean) => ({
-    padding: '6px 12px', cursor: 'pointer', fontSize: 13,
-    color: active ? '#3b82f6' : '#9ca3af',
-    borderBottom: active ? '2px solid #3b82f6' : 'none',
-  })
+  /** v7：库切换后清掉旧库的搜索结果、刷新树/lint、重挂载图谱。 */
+  const handleVaultChanged = () => {
+    setResults(null)
+    setVaultVersion((v) => v + 1)
+    window.dispatchEvent(new CustomEvent('wiki:pages-changed'))
+  }
 
-  return <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+  return <div className="knj-wiki knj-col">
+    <VaultHeader workspaces={workspaces} onVaultChanged={handleVaultChanged} />
     <SearchBox onResult={setResults} />
-    <LintBadge />
-    <div style={{ display: 'flex', borderBottom: '1px solid #1f2937' }}>
-      <div onClick={() => setView('browse')} style={tabStyle(view === 'browse')}>浏览</div>
-      <div onClick={() => setView('graph')} style={tabStyle(view === 'graph')}>图谱</div>
+
+    <div style={{ padding: '8px 12px 4px' }}>
+      <div className="knj-seg">
+        <button type='button' className={`knj-seg__item${view === 'browse' ? ' knj-seg__item--active' : ''}`}
+          onClick={() => setView('browse')}>
+          <IconBook size={13} />浏览
+        </button>
+        <button type='button' className={`knj-seg__item${view === 'graph' ? ' knj-seg__item--active' : ''}`}
+          onClick={() => setView('graph')}>
+          <IconGraph size={13} />图谱
+        </button>
+      </div>
     </div>
-    {view === 'graph' ? (
-      <div style={{ flex: 1, overflow: 'auto' }}><GraphView onOpenNote={openNote} /></div>
-    ) : results !== null ? (
-      <div style={{ flex: 1, overflow: 'auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 8px', alignItems: 'center' }}>
-          <span style={{ fontWeight: 600, color: '#d1d5db', fontSize: 12 }}>搜索结果（{results.length}）</span>
-          <button onClick={() => setResults(null)} style={{ background: 'transparent', border: 'none', color: '#3b82f6', cursor: 'pointer', fontSize: 12 }}>← 返回</button>
-        </div>
-        {results.length === 0 && <div style={{ padding: 12, fontSize: 12, color: '#9ca3af' }}>无匹配</div>}
-        {results.map((c) => (
-          <div key={c.id} onClick={() => openNote(c.id, c.category, c.title)}
-            style={{ padding: '6px 8px', borderBottom: '1px solid #1f2937', cursor: 'pointer' }}>
-            <div style={{ color: '#e5e7eb', fontSize: 13 }}>{c.title}</div>
-            <div style={{ color: '#6b7280', fontSize: 11 }}>{c.category} · {c.confidence}</div>
-            <div style={{ color: '#9ca3af', fontSize: 11, marginTop: 2 }}>{c.snippet}</div>
+
+    <div className="knj-grow knj-scroll">
+      {view === 'graph' ? (
+        // key=vaultVersion：库切换后强制重挂载，避免展示旧库图谱
+        <div key={vaultVersion}><GraphView onOpenNote={openNote} /></div>
+      ) : results !== null ? (
+        <div className="knj-col">
+          <div className="knj-result-head">
+            <span className="knj-result-title">搜索结果（{results.length}）</span>
+            <span className="knj-statusbar__spacer" />
+            <button type='button' className="knj-icon-btn" title='返回浏览' onClick={() => setResults(null)}>
+              <IconClose size={14} />
+            </button>
           </div>
-        ))}
-      </div>
-    ) : (
-      <div style={{ flex: 1, overflow: 'auto' }}>
+          {results.length === 0 && <div className="knj-empty">
+            <span className="knj-empty__icon"><IconBook size={26} /></span>
+            <div>没有匹配的笔记</div>
+            <div>换个关键词试试，或对 agent 说「把 XX 吸收进 wiki」。</div>
+          </div>}
+          {results.map((c) => (
+            <div key={c.id} className="knj-result-item" onClick={() => openNote(c.id, c.category, c.title)}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--knj-text)' }}>{c.title}</div>
+              <div className="knj-result-item__meta">
+                <span className={`knj-chip knj-chip--${c.category}`}>{c.category}</span>
+                <span>{c.confidence}</span>
+              </div>
+              <div className="knj-result-item__snippet">{c.snippet}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
         <VaultTree onOpen={(p) => openNote(p.id, p.category, p.title)} />
-      </div>
-    )}
+      )}
+    </div>
+
+    <LintPanel openNote={openNote} />
   </div>
 }

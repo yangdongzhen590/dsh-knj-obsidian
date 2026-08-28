@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { VaultStore } from './vault-store.ts'
+import type { VaultProvider } from './types.ts'
 import type { WikiCategory, Confidence } from './types.ts'
 import { lintVault } from './lint.ts'
 import { retrieve } from './retriever.ts'
@@ -9,7 +10,12 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildGraph, exportGraphHtml } from './graph-engine.ts'
 
-export function mountTools(ctx: Context, store: VaultStore): () => void {
+/** 每个工具执行时解析当前库（v7：agent 工具跟随 UI 切换的当前库）。 */
+function currentStore(provider: VaultProvider): VaultStore {
+  return provider.current() as VaultStore
+}
+
+export function mountTools(ctx: Context, provider: VaultProvider): () => void {
   ctx.tools.register(defineTool({
     name: 'wiki_ingest',
     description: '把 agent 提取好的知识页写入项目 wiki（.wiki/）。入参 pages 为页面数组；source 为源材料标识。存在同 id 页面时合并正文（保留 frontmatter 的 created，更新 updated）。传入 contentHash（源内容 SHA-256）且与 manifest 记录一致时整体跳过本次 ingest。',
@@ -46,6 +52,7 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
         : [{ type: 'text', text: `写入 wiki：新建 ${value.created.length} 页，更新 ${value.updated.length} 页` }],
     },
     async execute(args) {
+      const store = currentStore(provider)
       if (args.contentHash) {
         const prev = store.manifestEntry(args.source)
         if (prev && prev.content_hash === args.contentHash) {
@@ -98,6 +105,7 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
       render: (_args, value) => [{ type: 'text', text: `已沉淀到 ${value.page}` }],
     },
     async execute(args) {
+      const store = currentStore(provider)
       const now = new Date().toISOString()
       // kebab-case（保留 CJK 字符）：id 直接用作文件名，VaultStore 校验通过即可
       const id = args.title.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-').replace(/^-+|-+$/g, '') || `note-${Date.now()}`
@@ -136,7 +144,7 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
       render: (_args, value) => [{ type: 'text', text: `lint：${value.pageCount} 页，孤儿 ${value.orphans.length}，断链 ${value.brokenLinks.length}，缺 frontmatter ${value.missingFrontmatter.length}` }],
     },
     async execute() {
-      return lintVault(store)
+      return lintVault(currentStore(provider))
     },
   }))
 
@@ -176,7 +184,7 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
         : [{ type: 'text', text: `检索到 ${value.candidates.length} 条候选（${value.strategy}）：${value.candidates.map((c) => c.id).join('、')}` }],
     },
     async execute(args) {
-      return retrieve(store, args.query, {
+      return retrieve(currentStore(provider), args.query, {
         mode: args.mode === 'index-only' ? 'index-only' : 'auto',
         maxCandidates: args.maxCandidates ?? 10,
       })
@@ -206,6 +214,7 @@ export function mountTools(ctx: Context, store: VaultStore): () => void {
       },
     },
     async execute(args) {
+      const store = currentStore(provider)
       const format = args.format === 'json' ? 'json' : 'html'
       const graph = buildGraph(store)
       const exportDir = join(store.wikiRoot, 'wiki-export')

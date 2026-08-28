@@ -6,6 +6,8 @@
 import { createElement as h } from 'react'
 import { WikiSidebar } from './WikiSidebar.tsx'
 import { NoteWorkbench } from './NoteWorkbench.tsx'
+import { injectWikiStyles } from './styles.ts'
+import type { WorkspaceFace } from './VaultHeader.tsx'
 
 export const name = 'dsh-knj-obsidian'
 
@@ -30,6 +32,8 @@ interface BetterSidebarService {
 /** The client context shape this plugin relies on (structural). */
 interface ClientContext {
   betterSidebar?: BetterSidebarService
+  /** v7：宿主工作区运行时（dsh-client-runtime），缺失时仅手动切换库 */
+  workspaces?: WorkspaceFace
   effect(callback: () => unknown, label?: string): void
 }
 
@@ -37,7 +41,12 @@ export const inject = ['betterSidebar']
 
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
+    // 设计系统 v2：注入宿主令牌驱动的样式（幂等，全局只注入一次）
+    injectWikiStyles()
     if (!ctx.betterSidebar) return
+    // v7：防御性读取宿主工作区运行时；未注入/不可用时降级为手动切换（不阻塞标签渲染）
+    let workspaces: WorkspaceFace | undefined
+    try { workspaces = ctx.workspaces as WorkspaceFace } catch { workspaces = undefined }
     const disposers: Array<() => void> = []
     /** 边栏点击笔记/图谱节点 → 主区域打开"笔记"工作台标签。 */
     const openNote = (id: string, category: string, title: string): void => {
@@ -47,7 +56,7 @@ export function apply(ctx: ClientContext): void {
     disposers.push(ctx.betterSidebar.registerTab({
       id: 'dsh-knj-obsidian',
       title: '知识库',
-      component: () => h(WikiSidebar, { openNote }),
+      component: () => h(WikiSidebar, { openNote, workspaces }),
     }))
     // 主区域工作台标签（笔记视图，读 tab.path 的 id|category）
     disposers.push(ctx.betterSidebar.registerTab({

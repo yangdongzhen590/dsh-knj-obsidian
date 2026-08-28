@@ -1,32 +1,57 @@
 {
   "name": "dsh-knj-obsidian",
-  "version": "2026.8.257",
-  "description": "DSH 内简化版 Obsidian：AI agent 知识库的构建、检索与图谱（v1 构建 + v2 检索 + v3 图谱）。",
+  "version": "2026.8.281",
+  "description": "DSH 内置版 Obsidian：AI agent 知识库的构建、检索、图谱、UI 与增量构建（v1 构建 + v2 检索 + v3 图谱 + v4 UI + v5 笔记编辑 + v6 增量构建 + v7 多库管理）",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "license": "MIT",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
-      "inject": ["@deepseek-ai/dsh-client-runtime", "dsh-better-sidebar"],
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "dsh-better-sidebar"
+      ],
       "platform": "web"
     }
   },
   "exports": {
-    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
-    "./client": { "default": "./client/client.js" },
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./client/client.js"
+    },
     "./package.json": "./package.json"
   },
-  "files": ["lib", "src", "client", "cordis.patch.yml", "wiki-query", "README.md", "LICENSE"],
+  "files": [
+    "lib",
+    "src",
+    "client",
+    "cordis.patch.yml",
+    "wiki-query",
+    "wiki-distill",
+    "README.md",
+    "LICENSE"
+  ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.8"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": { "optional": true },
-    "@deepseek-ai/dsh-tools": { "optional": true }
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -47,5 +72,15 @@
     "build:client": "tsdown -c tsdown.config.ts",
     "check:client": "tsc -p tsconfig.client.json --noEmit",
     "check": "npm run typecheck && npm run build"
-  }
+  },
+  "dependencies": {
+    "@rolldown/binding-win32-x64-msvc": "^1.2.6",
+    "dompurify": "^3.4.14",
+    "marked": "^18.0.11"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangdongzhen590/dsh-knj-obsidian.git"
+  },
+  "homepage": "https://github.com/yangdongzhen590/dsh-knj-obsidian"
 }

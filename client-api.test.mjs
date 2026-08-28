@@ -31,8 +31,8 @@ test('空态引导文案存在且被边栏渲染', () => {
   assert.match(readFileSync(ws, 'utf8'), /VaultTree/)
 })
 
-test('VaultTree/SearchBox/LintBadge 组件存在', () => {
-  for (const f of ['VaultTree.tsx', 'SearchBox.tsx', 'LintBadge.tsx']) {
+test('VaultTree/SearchBox/LintPanel 组件存在（v2 起 LintBadge 由 LintPanel 取代）', () => {
+  for (const f of ['VaultTree.tsx', 'SearchBox.tsx', 'LintPanel.tsx']) {
     assert.ok(existsSync(join(ROOT, 'src/client', f)), `${f} 应存在`)
   }
 })

@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
 import { fetchPages, type PageSummary } from './api.ts'
+import { IconBook, IconChevronRight, IconFile, IconRefresh } from './icons.tsx'
 
 const CATEGORY_LABELS: Record<string, string> = {
   concepts: '概念', entities: '实体', references: '参考', synthesis: '综合', projects: '项目',
+}
+
+/** confidence 圆点：extracted 实心强调色 / inferred 空心 / ambiguous 琥珀 */
+const CONFIDENCE_DOT: Record<string, string> = {
+  extracted: 'knj-dot--ok',
+  inferred: 'knj-dot--muted',
+  ambiguous: 'knj-dot--warn',
 }
 
 export function VaultTree({ onOpen }: { onOpen: (page: PageSummary) => void }) {
@@ -11,17 +19,23 @@ export function VaultTree({ onOpen }: { onOpen: (page: PageSummary) => void }) {
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
-    fetchPages()
+    const load = () => fetchPages()
       .then((r) => { setPages(r.pages); setLoaded(true) })
       .catch((e) => { setError(String(e)); setLoaded(true) })
+    load()
+    // v5：笔记工作台保存成功后广播刷新
+    window.addEventListener('wiki:pages-changed', load)
+    return () => window.removeEventListener('wiki:pages-changed', load)
   }, [])
 
-  if (error) return <div style={{ color: '#f87171', fontSize: 12 }}>加载失败：{error}</div>
+  if (error) return <div className="knj-error"><IconRefresh size={14} />加载失败：{error}</div>
   // 三态：加载中不闪空态引导
-  if (!loaded) return <div style={{ padding: 16, fontSize: 13, color: '#6b7280', textAlign: 'center' }}>加载中…</div>
+  if (!loaded) return <div className="knj-loading"><span className="knj-spinner"><IconRefresh size={14} /></span>加载中…</div>
   if (pages.length === 0) {
-    return <div style={{ padding: 16, fontSize: 13, color: '#9ca3af', textAlign: 'center' }}>
-      知识库还是空的。<br />对 agent 说「把 XX 吸收进 wiki」开始。
+    return <div className="knj-empty">
+      <span className="knj-empty__icon"><IconBook size={28} /></span>
+      <div>知识库还是空的</div>
+      <div>对 agent 说「把 XX 吸收进 wiki」开始沉淀。</div>
     </div>
   }
 
@@ -32,21 +46,27 @@ export function VaultTree({ onOpen }: { onOpen: (page: PageSummary) => void }) {
     groups.set(p.category, list)
   }
 
-  return <div style={{ fontSize: 13 }}>
-    {[...groups.entries()].map(([cat, list]) => (
-      <div key={cat}>
-        <div style={{ padding: '6px 8px', fontWeight: 600, color: '#d1d5db', borderBottom: '1px solid #1f2937' }}>
-          {CATEGORY_LABELS[cat] ?? cat}（{list.length}）
-        </div>
-        {list.map((p) => (
-          <div key={p.id} onClick={() => onOpen(p)}
-            style={{ padding: '4px 8px 4px 20px', cursor: 'pointer', color: '#e5e7eb' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = '#1f2937' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}>
-            {p.title}
+  return <div className="knj-tree">
+    {[...groups.entries()].map(([cat, list]) => {
+      return (
+        <div key={cat} className="knj-tree__group">
+          <div className="knj-tree__head">
+            <span className="knj-tree__group-icon"><IconBook size={13} /></span>
+            {CATEGORY_LABELS[cat] ?? cat}
+            <span className="knj-tree__count">{list.length}</span>
           </div>
-        ))}
-      </div>
-    ))}
+          {list.map((p) => (
+            <div key={p.id} className="knj-tree__item" onClick={() => onOpen(p)} title={p.title}>
+              <span className="knj-tree__item-icon"><IconFile size={13} /></span>
+              <span className="knj-tree__item-title">{p.title}</span>
+              <span className={`knj-dot ${CONFIDENCE_DOT[p.confidence] ?? 'knj-dot--muted'}`} title={`confidence: ${p.confidence}`} />
+            </div>
+          ))}
+        </div>
+      )
+    })}
+    <div className="knj-tree__hint">
+      <IconChevronRight size={12} />点击笔记在右侧工作台打开
+    </div>
   </div>
 }

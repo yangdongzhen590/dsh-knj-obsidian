@@ -1,8 +1,9 @@
 // src/vault-store.ts
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
-import type { WikiCategory, WikiPage, ManifestEntry, VaultManifest } from './types.ts'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, renameSync, rmSync } from 'node:fs'
+import { basename, join, resolve, sep } from 'node:path'
+import { vaultIdOf } from './types.ts'
+import type { WikiCategory, WikiPage, ManifestEntry, VaultManifest, VaultProvider, VaultRecord, VaultListEntry } from './types.ts'
 
 const WIKI_DIR = '.wiki'
 const MANIFEST_FILE = '.manifest.json'
@@ -14,13 +15,70 @@ const CATEGORIES: WikiCategory[] = ['concepts', 'entities', 'references', 'synth
  * resolve() 包含性检查作为第二道防线。
  */
 const SAFE_ID_RE = /^[a-z0-9\u4e00-\u9fff][a-z0-9\u4e00-\u9fff-]*$/
+export { SAFE_ID_RE }
 
-export class VaultStore {
+/** saveRawPage 的校验失败：携带建议的 HTTP status。 */
+export class SaveError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+    this.name = 'SaveError'
+  }
+}
+
+/** 解析整份文件文本（统一 \n 后）为 WikiPage；无合法 frontmatter 返回 null。
+ *  字段回退语义与 v4 readPage 一致（缺省用 fallbackId/fallbackCategory），读取宽容。 */
+export function parsePageText(raw: string, fallbackId = '', fallbackCategory: WikiCategory = 'concepts'): WikiPage | null {
+  const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
+  if (!m) return null
+  const fm: Record<string, string> = {}
+  for (const line of m[1].split('\n')) {
+    const kv = line.match(/^([\w-]+):\s*(.+)$/)
+    if (kv) fm[kv[1]] = kv[2]
+  }
+  return {
+    id: fm.id ?? fallbackId,
+    title: fm.title ?? fallbackId,
+    category: (fm.category as WikiCategory) ?? fallbackCategory,
+    tags: (fm.tags ?? '[]').replace(/^\[|\]$/g, '').split(',').map((s) => s.trim()).filter(Boolean),
+    source: fm.source ?? '',
+    confidence: (fm.confidence as WikiPage['confidence']) ?? 'extracted',
+    created: fm.created ?? '',
+    updated: fm.updated ?? '',
+    body: (m[2] ?? '').trim(),
+  }
+}
+
+/** 保存时的强校验：id/title/category 必须齐且与目标一致。 */
+function assertSaveablePage(page: WikiPage | null, id: string, category: WikiCategory): asserts page is WikiPage {
+  if (!page || !page.id || !page.title || !page.category) {
+    throw new SaveError(422, 'frontmatter 无法解析：需要合法的 `---` 围栏块且含 id/title/category')
+  }
+  if (page.id !== id || page.category !== category) {
+    throw new SaveError(422, `frontmatter 与目标不符：期望 id=${id} category=${category}，实际 id=${page.id} category=${page.category}`)
+  }
+}
+
+export class VaultStore implements VaultProvider {
   constructor(private readonly vaultRoot: string) {}
 
   /** 只读暴露 wiki 根目录（<vaultRoot>/.wiki），供检索器读 index.md */
   get wikiRoot(): string {
     return join(this.vaultRoot, WIKI_DIR)
+  }
+
+  // ---------- VaultProvider 单库实现（多库时由 VaultManager 提供） ----------
+
+  /** 单库模式：当前库就是自身。 */
+  current(): VaultStore {
+    return this
+  }
+
+  currentRecord(): VaultRecord | null {
+    return { id: vaultIdOf(this.vaultRoot), name: basename(this.vaultRoot) || this.vaultRoot, root: this.vaultRoot, source: 'cwd' }
+  }
+
+  listVaults(): VaultListEntry[] {
+    return [{ ...this.currentRecord()!, pageCount: this.listPagesReadonly().length }]
   }
 
   ensure(): void {
@@ -98,24 +156,40 @@ export class VaultStore {
     if (!existsSync(file)) return null
     // 统一换行为 \n：CRLF 文件（Windows 编辑器 / git core.autocrlf）也能解析 frontmatter
     const raw = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
-    const m = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
-    if (!m) return null
-    const fm: Record<string, string> = {}
-    for (const line of m[1].split('\n')) {
-      const kv = line.match(/^([\w-]+):\s*(.+)$/)
-      if (kv) fm[kv[1]] = kv[2]
+    return parsePageText(raw, id, category)
+  }
+
+  /** 读磁盘原文（含 frontmatter，逐字节）；v5 源码视图用。 */
+  readRawPage(id: string, category: WikiCategory): string | null {
+    const file = this.safePagePath(id, category)
+    if (!file || !existsSync(file)) return null
+    return readFileSync(file, 'utf8')
+  }
+
+  /**
+   * 保存整份文件原文（v5 全文编辑）：
+   * - 路径必须通过 safePagePath（防穿越）
+   * - frontmatter 必须可解析且 id/category 与目标一致（防「编辑 A 存成 B」）
+   * - 目标必须已存在（v5 只做编辑，不做新建/改名）
+   * - 原子写：先写临时文件再 rename
+   * 返回解析后的页面；任何校验失败抛 SaveError（含 status 提示），磁盘不动。
+   */
+  saveRawPage(id: string, category: WikiCategory, rawText: string): WikiPage {
+    const file = this.safePagePath(id, category)
+    if (!file) throw new SaveError(400, `invalid page id "${id}"`)
+    if (!existsSync(file)) throw new SaveError(404, `page not found: ${category}/${id}`)
+    const text = rawText.replace(/\r\n/g, '\n')
+    const page = parsePageText(text, id, category)
+    assertSaveablePage(page, id, category)
+    const tmp = file + '.tmp-' + Date.now()
+    writeFileSync(tmp, text, 'utf8')
+    try {
+      renameSync(tmp, file)
+    } catch (e) {
+      try { rmSync(tmp, { force: true }) } catch { /* best effort */ }
+      throw e
     }
-    return {
-      id: fm.id ?? id,
-      title: fm.title ?? id,
-      category: (fm.category as WikiCategory) ?? category,
-      tags: (fm.tags ?? '[]').replace(/^\[|\]$/g, '').split(',').map((s) => s.trim()).filter(Boolean),
-      source: fm.source ?? '',
-      confidence: (fm.confidence as WikiPage['confidence']) ?? 'extracted',
-      created: fm.created ?? '',
-      updated: fm.updated ?? '',
-      body: m[2].trim(),
-    }
+    return page
   }
 
   sha256(text: string): string {

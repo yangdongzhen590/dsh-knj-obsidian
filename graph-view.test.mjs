@@ -20,12 +20,12 @@ test('GraphView.tsx 存在且含力导向/图谱渲染逻辑', () => {
   assert.match(text, /svg|<svg/i)
 })
 
-test('WikiSidebar 含图谱入口与 openTab 打开笔记', () => {
+test('WikiSidebar 含图谱入口与经 openNote 打开笔记（openTab 由 index.ts 注入，见下一条用例）', () => {
   const ws = join(ROOT, 'src/client/WikiSidebar.tsx')
   assert.ok(existsSync(ws), 'src/client/WikiSidebar.tsx 应存在')
   const text = readFileSync(ws, 'utf8')
   assert.match(text, /图谱/)
-  assert.match(text, /openTab/)
+  assert.match(text, /openNote/)
 })
 
 test('index.ts 注册工作台标签 type', () => {
