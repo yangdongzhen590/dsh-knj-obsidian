@@ -7,7 +7,7 @@ export function vaultIdOf(root: string): string {
   return 'v-' + createHash('sha1').update(resolve(root)).digest('hex').slice(0, 12)
 }
 
-export type WikiCategory = 'concepts' | 'entities' | 'references' | 'synthesis' | 'projects'
+export type WikiCategory = 'concepts' | 'entities' | 'references' | 'synthesis' | 'projects' | 'dictionaries' | 'tables'
 
 export type Confidence = 'extracted' | 'inferred' | 'ambiguous'
 
@@ -62,6 +62,8 @@ export interface VaultListEntry extends VaultRecord {
  */
 export interface VaultProvider {
   current(): VaultStoreLike
+  /** 只读路径专用（GET 端点/检索）：返回的 store 绝不触发 ensure()/mkdir 写副作用。 */
+  currentReadonly(): VaultStoreLike
   currentRecord(): VaultRecord | null
   listVaults(): VaultListEntry[]
   /** 多库专有：切换 / 按目录激活 / 新建挂接 / 移除（单库实现无这些方法） */

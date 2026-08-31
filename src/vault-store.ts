@@ -7,7 +7,7 @@ import type { WikiCategory, WikiPage, ManifestEntry, VaultManifest, VaultProvide
 
 const WIKI_DIR = '.wiki'
 const MANIFEST_FILE = '.manifest.json'
-const CATEGORIES: WikiCategory[] = ['concepts', 'entities', 'references', 'synthesis', 'projects']
+const CATEGORIES: WikiCategory[] = ['concepts', 'entities', 'references', 'synthesis', 'projects', 'dictionaries', 'tables']
 
 /**
  * 页面 id 的严格 kebab-case 模式（允许 CJK 字符，中文标题页保留语义文件名）：
@@ -26,9 +26,10 @@ export class SaveError extends Error {
 }
 
 /** 解析整份文件文本（统一 \n 后）为 WikiPage；无合法 frontmatter 返回 null。
- *  字段回退语义与 v4 readPage 一致（缺省用 fallbackId/fallbackCategory），读取宽容。 */
+ *  字段回退语义与 v4 readPage 一致（缺省用 fallbackId/fallbackCategory），读取宽容。
+ *  剥离开头 UTF-8 BOM（\uFEFF）：带 BOM 的文件（Windows 编辑器常见）同样可解析。 */
 export function parsePageText(raw: string, fallbackId = '', fallbackCategory: WikiCategory = 'concepts'): WikiPage | null {
-  const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
+  const m = raw.replace(/^\uFEFF/, '').match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
   if (!m) return null
   const fm: Record<string, string> = {}
   for (const line of m[1].split('\n')) {
@@ -70,6 +71,11 @@ export class VaultStore implements VaultProvider {
 
   /** 单库模式：当前库就是自身。 */
   current(): VaultStore {
+    return this
+  }
+
+  /** 单库模式只读视图同样是自身（readPageCached 等读路径本身零写入）。 */
+  currentReadonly(): VaultStore {
     return this
   }
 
@@ -127,6 +133,11 @@ export class VaultStore implements VaultProvider {
     return file
   }
 
+  /** 单行化：frontmatter 值里的换行会注入伪造的 `key: value` 行（改写 id/category），写入前必须拍平。 */
+  private static flatField(value: string): string {
+    return String(value ?? '').replace(/[\r\n]+/g, ' ')
+  }
+
   writePage(page: WikiPage): { created: boolean } {
     this.ensure()
     const file = this.safePagePath(page.id, page.category)
@@ -134,29 +145,71 @@ export class VaultStore implements VaultProvider {
       throw new Error(`invalid page id "${page.id}": ids must match /^[a-z0-9\u4e00-\u9fff][a-z0-9\u4e00-\u9fff-]*$/ and stay inside the vault`)
     }
     const created = !existsSync(file)
+    const safeTitle = VaultStore.flatField(page.title)
+    const safeSource = VaultStore.flatField(page.source)
+    const safeTags = page.tags.map((t) => VaultStore.flatField(t))
     const fm = [
       '---',
       `id: ${page.id}`,
-      `title: ${page.title}`,
+      `title: ${safeTitle}`,
       `category: ${page.category}`,
-      `tags: [${page.tags.join(', ')}]`,
-      `source: ${page.source}`,
+      `tags: [${safeTags.join(', ')}]`,
+      `source: ${safeSource}`,
       `confidence: ${page.confidence}`,
       `created: ${page.created}`,
       `updated: ${page.updated}`,
       '---',
     ].join('\n')
-    writeFileSync(file, `${fm}\n\n${page.body}\n`, 'utf8')
+    const text = `${fm}\n\n${page.body}\n`
+    // round-trip 校验：写出的 frontmatter 必须解析回同一 id/category（注入防御的第二道防线）
+    const roundTrip = parsePageText(text, page.id, page.category)
+    if (!roundTrip || roundTrip.id !== page.id || roundTrip.category !== page.category) {
+      throw new Error(`frontmatter round-trip 校验失败：页面 "${page.id}" 的字段含无法安全写出的字符`)
+    }
+    writeFileSync(file, text, 'utf8')
+    this.cache.delete(this.cacheKey(page.id, page.category))
     return { created }
   }
 
   readPage(id: string, category: WikiCategory): WikiPage | null {
+    return this.readPageCached(id, category)
+  }
+
+  /** mtime 页缓存：stat 命中即免读盘免解析（磁盘外部编辑通过 mtime 变化自动失效）。 */
+  private cache = new Map<string, { mtimeMs: number; page: WikiPage | null }>()
+
+  private cacheKey(id: string, category: WikiCategory): string {
+    return `${category}/${id}`
+  }
+
+  private readPageCached(id: string, category: WikiCategory, presetStat?: { mtimeMs: number }): WikiPage | null {
     const file = this.safePagePath(id, category)
     if (!file) return null
-    if (!existsSync(file)) return null
-    // 统一换行为 \n：CRLF 文件（Windows 编辑器 / git core.autocrlf）也能解析 frontmatter
-    const raw = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
-    return parsePageText(raw, id, category)
+    const key = this.cacheKey(id, category)
+    let mtimeMs: number
+    if (presetStat) {
+      mtimeMs = presetStat.mtimeMs
+    } else {
+      let st: { mtimeMs: number } | null = null
+      try { st = statSync(file) } catch { st = null }
+      if (!st) {
+        this.cache.delete(key)
+        return null
+      }
+      mtimeMs = st.mtimeMs
+    }
+    const hit = this.cache.get(key)
+    if (hit && hit.mtimeMs === mtimeMs) return hit.page ? { ...hit.page, tags: [...hit.page.tags] } : null
+    let page: WikiPage | null = null
+    try {
+      // 统一换行为 \n 并剥 BOM：CRLF 文件（Windows 编辑器 / git core.autocrlf）也能解析 frontmatter
+      const raw = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+      page = parsePageText(raw, id, category)
+    } catch {
+      page = null
+    }
+    this.cache.set(key, { mtimeMs, page })
+    return page ? { ...page, tags: [...page.tags] } : null
   }
 
   /** 读磁盘原文（含 frontmatter，逐字节）；v5 源码视图用。 */
@@ -189,6 +242,7 @@ export class VaultStore implements VaultProvider {
       try { rmSync(tmp, { force: true }) } catch { /* best effort */ }
       throw e
     }
+    this.cache.delete(this.cacheKey(id, category))
     return page
   }
 
@@ -228,39 +282,31 @@ export class VaultStore implements VaultProvider {
 
   listPages(): { id: string; category: WikiCategory; title: string }[] {
     this.ensure()
-    const out: { id: string; category: WikiCategory; title: string }[] = []
-    for (const c of CATEGORIES) {
-      const dir = join(this.wikiRoot, c)
-      for (const f of readdirSync(dir)) {
-        if (!f.endsWith('.md')) continue
-        const full = join(dir, f)
-        if (!statSync(full).isFile()) continue
-        const id = f.slice(0, -3)
-        const page = this.readPage(id, c)
-        // 无 frontmatter 的页面 readPage 返回 null，也要列入清单（lint 才能标记缺 frontmatter）
-        if (page) out.push({ id: page.id, category: c, title: page.title })
-        else out.push({ id, category: c, title: id })
-      }
-    }
-    return out
+    return this.listPagesReadonly()
   }
 
   /**
    * 只读列出页面清单：不调用 ensure()，不创建任何目录/文件。
-   * 分类目录缺失时跳过（全新 vault 上检索仍是零写入）。条目语义与 listPages()
-   * 完全一致，区别仅在于不触发 ensure()——供检索这类只读路径使用。
+   * 分类目录缺失时跳过（全新 vault 上检索仍是零写入）。
+   * stat 与页缓存复用：每文件一次 stat，mtime 未变则免读盘免解析。
    */
   listPagesReadonly(): { id: string; category: WikiCategory; title: string }[] {
     const out: { id: string; category: WikiCategory; title: string }[] = []
     for (const c of CATEGORIES) {
       const dir = join(this.wikiRoot, c)
-      if (!existsSync(dir)) continue
-      for (const f of readdirSync(dir)) {
+      let files: string[]
+      try { files = readdirSync(dir) } catch { continue }
+      for (const f of files) {
         if (!f.endsWith('.md')) continue
         const full = join(dir, f)
-        if (!statSync(full).isFile()) continue
+        let mtimeMs: number
+        try {
+          const st = statSync(full)
+          if (!st.isFile()) continue
+          mtimeMs = st.mtimeMs
+        } catch { continue }
         const id = f.slice(0, -3)
-        const page = this.readPage(id, c)
+        const page = this.readPageCached(id, c, { mtimeMs })
         if (page) out.push({ id: page.id, category: c, title: page.title })
         else out.push({ id, category: c, title: id })
       }
