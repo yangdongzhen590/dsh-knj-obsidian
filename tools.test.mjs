@@ -286,3 +286,12 @@ test('wiki_mine 空结果不报错', async (t) => {
   assert.deepEqual(res.new, [])
   assert.ok(res.note, '空结果应带 note')
 })
+
+test('wiki-mine skill 文件存在且 package.json 白名单包含', () => {
+  const ROOT = fileURLToPath(new URL('.', import.meta.url))
+  const skill = readFileSync(join(ROOT, 'wiki-mine/SKILL.md'), 'utf8')
+  assert.match(skill, /wiki_mine/, 'SKILL.md 应指导调用 wiki_mine 工具')
+  assert.match(skill, /wiki_ingest/, 'SKILL.md 应指导经 wiki_ingest 入库')
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  assert.ok(pkg.files.includes('wiki-mine'), 'package.json files 应含 wiki-mine')
+})
