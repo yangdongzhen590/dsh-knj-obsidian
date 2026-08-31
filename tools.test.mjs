@@ -295,3 +295,51 @@ test('wiki-mine skill 文件存在且 package.json 白名单包含', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.ok(pkg.files.includes('wiki-mine'), 'package.json files 应含 wiki-mine')
 })
+
+// ---- M2: wiki_mine kind=db 表对账 ----
+function makeDbMineVault() {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-obsidian-minedb-'))
+  cpSync(join(fileURLToPath(new URL('.', import.meta.url)), 'test-fixtures', 'mining-db'), join(dir, 'src'), { recursive: true })
+  const store = new VaultStore(dir)
+  store.ensure()
+  return { dir, store }
+}
+
+test('wiki_mine kind=db 对账：全量 new（首次挖掘）', async (t) => {
+  const { dir, store } = makeDbMineVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  mountTools({ tools: { register: (def) => registered.push(def) } }, { current: () => store })
+  const def = registered.find((d) => d.name === 'wiki_mine')
+  const res = await def.execute({ kind: 'db' }, EXEC)
+  assert.ok(res.tables.length >= 2, '应挖到多张表（t_order + t_order_item）')
+  assert.equal(res.dbNew.length, res.tables.length, '首次全 dbNew')
+  assert.equal(res.dbUnchanged.length, 0)
+  assert.equal(res.dbChanged.length, 0)
+  assert.equal(res.dbDeleted.length, 0)
+})
+
+test('wiki_mine kind=db 对账：同哈希→unchanged，改哈希→changed', async (t) => {
+  const { dir, store } = makeDbMineVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  mountTools({ tools: { register: (def) => registered.push(def) } }, { current: () => store })
+  const def = registered.find((d) => d.name === 'wiki_mine')
+  const first = await def.execute({ kind: 'db' }, EXEC)
+  for (const tb of first.tables) {
+    store.updateManifest(`mine:db:${tb.file}`, {
+      content_hash: tb.hash, last_ingested: new Date().toISOString(), pages_produced: [tb.table.toLowerCase()],
+    })
+  }
+  const again = await def.execute({ kind: 'db' }, EXEC)
+  assert.equal(again.dbNew.length, 0, '同哈希不应再 dbNew')
+  assert.equal(again.dbUnchanged.length, first.tables.length, '同哈希应为 dbUnchanged')
+  // 改哈希
+  for (const tb of first.tables) {
+    store.updateManifest(`mine:db:${tb.file}`, {
+      content_hash: 'stale-db', last_ingested: new Date().toISOString(), pages_produced: [tb.table.toLowerCase()],
+    })
+  }
+  const third = await def.execute({ kind: 'db' }, EXEC)
+  assert.equal(third.dbChanged.length, first.tables.length, '哈希不一致应为 dbChanged')
+})

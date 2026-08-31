@@ -9,8 +9,50 @@ import { retrieve } from './retriever.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildGraph, exportGraphHtml } from './graph-engine.ts'
-import { mineEnums } from './code-miner.ts'
+import { mineEnums, mineTables } from './code-miner.ts'
 import { readProgress, markModule, pendingModules, progressFileFor } from './mining-progress.ts'
+
+/** wiki_mine 输出的表候选 items（dbNew/dbChanged/dbUnchanged/tables 共用）。 */
+const TABLE_ITEM_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    table: { type: 'string' }, module: { type: 'string' }, file: { type: 'string' },
+    line: { type: 'number' }, hash: { type: 'string' },
+    sources: { type: 'array', items: { type: 'string' } },
+    columns: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          name: { type: 'string' }, type: { type: 'string' },
+          nullable: { type: 'boolean' }, comment: { type: 'string' },
+          primaryKey: { type: 'boolean' }, line: { type: 'number' },
+        },
+      },
+    },
+    indexes: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          name: { type: 'string' }, columns: { type: 'array', items: { type: 'string' } },
+          unique: { type: 'boolean' }, line: { type: 'number' },
+        },
+      },
+    },
+    relations: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          from: { type: 'string' }, toTable: { type: 'string' },
+          toColumn: { type: 'string' }, line: { type: 'number' },
+        },
+      },
+    },
+    comment: { type: 'string' },
+  },
+} as const
 
 /** 每个工具执行时解析当前库（v7：agent 工具跟随 UI 切换的当前库）。 */
 function currentStore(provider: VaultProvider): VaultStore {
@@ -338,6 +380,11 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
             },
           },
           deleted: { type: 'array', items: { type: 'string' }, required: true },
+          tables: { type: 'array', required: true, items: TABLE_ITEM_SCHEMA },
+          dbNew: { type: 'array', required: true, items: TABLE_ITEM_SCHEMA },
+          dbChanged: { type: 'array', required: true, items: TABLE_ITEM_SCHEMA },
+          dbUnchanged: { type: 'array', required: true, items: TABLE_ITEM_SCHEMA },
+          dbDeleted: { type: 'array', items: { type: 'string' }, required: true },
           outline: {
             type: 'array', required: true,
             items: {
@@ -353,8 +400,10 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
         },
       },
       render: (_args, value) => {
-        const base = `挖掘：${value.modules.length} 模块 / 枚举 ${value.new.length} 新 · ${value.changed.length} 变 · ${value.unchanged.length} 无变 · ${value.deleted.length} 删，剩 ${value.remaining} 模块待挖`
-        return [{ type: 'text', text: value.enums.length === 0 && value.deleted.length === 0 ? `${base}（${value.note ?? ''}）` : base }]
+        const enumPart = value.enums.length > 0 ? `枚举 ${value.new.length} 新 · ${value.changed.length} 变 · ${value.unchanged.length} 无变 · ${value.deleted.length} 删` : ''
+        const dbPart = value.tables.length > 0 ? `表 ${value.dbNew.length} 新 · ${value.dbChanged.length} 变 · ${value.dbUnchanged.length} 无变 · ${value.dbDeleted.length} 删` : ''
+        const base = `挖掘：${value.modules.length} 模块 / ${[enumPart, dbPart].filter(Boolean).join('；')}，剩 ${value.remaining} 模块待挖`
+        return [{ type: 'text', text: value.enums.length === 0 && value.tables.length === 0 && value.deleted.length === 0 && value.dbDeleted.length === 0 ? `${base}（${value.note ?? ''}）` : base }]
       },
     },
     async execute(args) {
@@ -364,13 +413,13 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
       const progressFile = progressFileFor(store.wikiRoot, 'enum')
       const progress = readProgress(progressFile, 'enum')
       const resumeOnly = args.resume ? new Set(pendingModules(progress)) : null
+
+      // ---- 枚举分支 ----
       const enumResult = (kind === 'enum' || kind === 'both')
         ? mineEnums(projectRoot, args.module)
         : { enums: [], outline: [], modules: [] }
       let enums = enumResult.enums
       if (resumeOnly && enums.length > 0) enums = enums.filter((e) => resumeOnly.has(e.module))
-
-      // ---- 对账：全量扫描候选 ↔ manifest 记录 ----
       const newE: typeof enums = []
       const changedE: typeof enums = []
       const unchangedE: typeof enums = []
@@ -381,7 +430,6 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
         else if (prev.content_hash === e.hash) unchangedE.push(e)
         else changedE.push(e)
       }
-      // deleted：manifest 有 mine:enum:* 记录但当前扫描无此文件
       const deleted: string[] = []
       for (const src of store.manifestSources()) {
         if (src.startsWith('mine:enum:') && !scannedFiles.has(src.slice('mine:enum:'.length))) {
@@ -389,12 +437,37 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
         }
       }
 
-      const note = enums.length === 0 && deleted.length === 0
-        ? '当前项目未发现枚举声明或常量类' : undefined
+      // ---- 表结构分支（M2） ----
+      const tableResult = (kind === 'db' || kind === 'both')
+        ? mineTables(projectRoot, args.module)
+        : { tables: [], outline: [], modules: [] }
+      let tables = tableResult.tables
+      if (resumeOnly && tables.length > 0) tables = tables.filter((t) => resumeOnly.has(t.module))
+      const dbNew: typeof tables = []
+      const dbChanged: typeof tables = []
+      const dbUnchanged: typeof tables = []
+      const scannedDbFiles = new Set(tables.map((t) => t.file))
+      for (const t of tables) {
+        const prev = store.manifestEntry(`mine:db:${t.file}`)
+        if (!prev) dbNew.push(t)
+        else if (prev.content_hash === t.hash) dbUnchanged.push(t)
+        else dbChanged.push(t)
+      }
+      const dbDeleted: string[] = []
+      for (const src of store.manifestSources()) {
+        if (src.startsWith('mine:db:') && !scannedDbFiles.has(src.slice('mine:db:'.length))) {
+          dbDeleted.push(src.slice('mine:db:'.length))
+        }
+      }
+
+      const note = enums.length === 0 && deleted.length === 0 && tables.length === 0 && dbDeleted.length === 0
+        ? '当前项目未发现枚举/常量类或数据库表结构' : undefined
       return {
         enums, new: newE, changed: changedE, unchanged: unchangedE, deleted,
-        outline: enumResult.outline, modules: enumResult.modules,
-        remaining: resumeOnly ? resumeOnly.size : enumResult.modules.length, note,
+        tables, dbNew, dbChanged, dbUnchanged, dbDeleted,
+        outline: [...enumResult.outline, ...tableResult.outline],
+        modules: [...enumResult.modules, ...tableResult.modules],
+        remaining: resumeOnly ? resumeOnly.size : (enumResult.modules.length + tableResult.modules.length), note,
       }
     },
   }))
