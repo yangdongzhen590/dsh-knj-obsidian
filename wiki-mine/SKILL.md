@@ -29,6 +29,15 @@ description: >
 
 对选定模块调用 `wiki_mine { kind, module }` 取候选目录（含源文件路径、行号、哈希）。
 对账报告含义：`new`=未挖掘、`changed`=有变化需重挖、`unchanged`=挖过无变、`deleted`=代码已删（孤儿页候选）。
+表结构（kind=db）对应用 `dbNew`/`dbChanged`/`dbUnchanged`/`dbDeleted`。
+
+### 表结构挖掘（kind=db）
+1. 调 `wiki_mine { kind: 'db', module? }` 取表候选（对账报告同枚举）
+2. 每张表一页：category=tables，tags=[table, module:<模块名>]
+3. 正文：列清单表格（列 | 类型 | 可空 | 注释 | 主键）+ 索引小节 + 外键关系小节 + 来源行号
+4. source = `mine:db:<相对路径>`；contentHash = 源文件哈希（候选 hash 字段）
+5. 只处理 dbNew + dbChanged；dbUnchanged 跳过；dbDeleted 报告孤儿表页
+6. 多来源合并已由工具完成（DDL 优先、mapper/JPA 补充），蒸馏时用合并后的列清单
 
 ## 第 3 步：蒸馏（模型工作）
 
