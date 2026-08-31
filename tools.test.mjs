@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { VaultStore } from './lib/vault-store.js'
 import { mountTools } from './lib/tools.js'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
@@ -102,6 +103,55 @@ test('wiki_ingest 校验必填参数（缺 source 报错）', async (t) => {
   await assert.rejects(def.execute({ pages: [] }, EXEC))
 })
 
+test('wiki_ingest 跨源同 id 不覆盖：自动 -2 后缀新建，原页内容保持旧源', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  const fakeCtx = { tools: { register: (def) => registered.push(def) } }
+  mountTools(fakeCtx, store)
+  const def = registered.find((d) => d.name === 'wiki_ingest')
+
+  // 源 A 先写入 concept-x
+  await def.execute({ source: 'agent:claude', pages: [{ id: 'concept-x', title: 'X', category: 'concepts', body: 'A 源的内容' }] }, EXEC)
+  // 源 B（不同 source）再写同 id
+  const res = await def.execute({ source: 'agent:codex', pages: [{ id: 'concept-x', title: 'X', category: 'concepts', body: 'B 源的内容' }] }, EXEC)
+
+  // 新页落为 concept-x-2，原页保持 A 源内容
+  assert.deepEqual(res, { created: ['concept-x-2'], updated: [], skipped: false })
+  const original = store.readPage('concept-x', 'concepts')
+  assert.equal(original.body, 'A 源的内容', '不同来源不得静默覆盖旧源页面')
+  assert.equal(original.source, 'agent:claude')
+  const renamed = store.readPage('concept-x-2', 'concepts')
+  assert.ok(renamed)
+  assert.equal(renamed.body, 'B 源的内容')
+  assert.equal(renamed.source, 'agent:codex')
+
+  // 同源重导仍是覆盖更新语义（created 保留）
+  const again = await def.execute({ source: 'agent:claude', pages: [{ id: 'concept-x', title: 'X', category: 'concepts', body: 'A 源的内容 v2' }] }, EXEC)
+  assert.deepEqual(again, { created: [], updated: ['concept-x'], skipped: false })
+  assert.equal(store.readPage('concept-x', 'concepts').body, 'A 源的内容 v2')
+})
+
+test('wiki_ingest 跨源避让后：新源重导更新自己的 -N 页（不得无限膨胀成 -3/-4）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  const fakeCtx = { tools: { register: (def) => registered.push(def) } }
+  mountTools(fakeCtx, store)
+  const def = registered.find((d) => d.name === 'wiki_ingest')
+
+  await def.execute({ source: 'agent:claude', pages: [{ id: 'concept-x', title: 'X', category: 'concepts', body: 'A 源 v1' }] }, EXEC)
+  await def.execute({ source: 'agent:codex', pages: [{ id: 'concept-x', title: 'X', category: 'concepts', body: 'B 源 v1' }] }, EXEC)
+  assert.ok(store.readPage('concept-x-2', 'concepts'), 'B 源首次应避让到 concept-x-2')
+
+  // B 源再次重导同 id 更新：必须更新 concept-x-2，而不是再避让出 concept-x-3
+  const res = await def.execute({ source: 'agent:codex', pages: [{ id: 'concept-x', title: 'X', category: 'concepts', body: 'B 源 v2' }] }, EXEC)
+  assert.deepEqual(res, { created: [], updated: ['concept-x-2'], skipped: false })
+  assert.equal(store.readPage('concept-x-2', 'concepts').body, 'B 源 v2', '新源重导必须更新自己的 -N 页')
+  assert.equal(store.readPage('concept-x', 'concepts').body, 'A 源 v1', '原源页面仍不受影响')
+  assert.equal(store.readPage('concept-x-3', 'concepts'), null, '不得无限膨胀出 concept-x-3')
+})
+
 test('wiki_capture 沉淀单页（默认 references/，confidence=inferred，id 保留 CJK 字符）', async (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -139,4 +189,15 @@ test('wiki_lint 注册并返回 LintReport，输出通过 schema 校验', async 
   // 输出契约：全部属性声明且 additionalProperties:false，LintReport 结构可被 registry 校验
   const violations = validateJsonSchemaValue(def.output.schema, report)
   assert.deepEqual(violations, [])
+})
+
+test('wiki_ingest/wiki_capture 工具 category 枚举含 dictionaries/tables', () => {
+  const ROOT = fileURLToPath(new URL('.', import.meta.url))
+  const src = readFileSync(join(ROOT, 'src/tools.ts'), 'utf8')
+  const enumRe = /enum: \['concepts', 'entities', 'references', 'synthesis', 'projects'(, 'dictionaries', 'tables')?\]/g
+  const matches = [...src.matchAll(enumRe)]
+  assert.equal(matches.length, 2, 'wiki_ingest 与 wiki_capture 两处 category enum 都应含新分类')
+  for (const m of matches) {
+    assert.ok(m[1], `enum 应含新分类：${m[0]}`)
+  }
 })

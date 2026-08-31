@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { VaultStore } from './vault-store.ts'
 import type { VaultProvider } from './types.ts'
-import type { WikiCategory, Confidence } from './types.ts'
+import type { WikiCategory, Confidence, WikiPage } from './types.ts'
 import { lintVault } from './lint.ts'
 import { retrieve } from './retriever.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -18,7 +18,7 @@ function currentStore(provider: VaultProvider): VaultStore {
 export function mountTools(ctx: Context, provider: VaultProvider): () => void {
   ctx.tools.register(defineTool({
     name: 'wiki_ingest',
-    description: '把 agent 提取好的知识页写入项目 wiki（.wiki/）。入参 pages 为页面数组；source 为源材料标识。存在同 id 页面时合并正文（保留 frontmatter 的 created，更新 updated）。传入 contentHash（源内容 SHA-256）且与 manifest 记录一致时整体跳过本次 ingest。',
+    description: '把 agent 提取好的知识页写入项目 wiki（.wiki/）。入参 pages 为页面数组；source 为源材料标识。同一 source 重新导入时覆盖更新（保留 frontmatter 的 created，更新 updated）；库内已有同 id 页面但来自不同 source 时不覆盖，自动加 -2/-3 后缀新建（防止跨源静默丢失旧内容）。传入 contentHash（源内容 SHA-256）且与 manifest 记录一致时整体跳过本次 ingest。',
     parameters: {
       source: { type: 'string', required: true, description: '源材料标识：文件路径 / URL / agent:<source>' },
       contentHash: { type: 'string', description: '源内容 SHA-256；与 manifest 记录一致时跳过本次 ingest' },
@@ -29,7 +29,7 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
           properties: {
             id: { type: 'string', required: true, description: 'kebab-case 稳定 id' },
             title: { type: 'string', required: true },
-            category: { type: 'string', required: true, enum: ['concepts', 'entities', 'references', 'synthesis', 'projects'] },
+            category: { type: 'string', required: true, enum: ['concepts', 'entities', 'references', 'synthesis', 'projects', 'dictionaries', 'tables'] },
             tags: { type: 'array', items: { type: 'string' } },
             confidence: { type: 'string', enum: ['extracted', 'inferred', 'ambiguous'] },
             body: { type: 'string', required: true, description: 'markdown 正文，不含 frontmatter' },
@@ -67,20 +67,37 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
         const cat = p.category as WikiCategory
         const conf = (p.confidence ?? 'extracted') as Confidence
         const existing = store.readPage(p.id, cat)
+        // 跨源同 id 冲突避让（与 importer.ts 语义一致）：旧页来自别的 source 时不覆盖——
+        // 覆盖会让旧源内容静默丢失，且旧源在 manifest 里的 content_hash 仍匹配，重导被 skip，无恢复路径。
+        let id = p.id
+        let reused = existing // 用于保留 created 的已有页（同源原 id，或本源的 -N 页）
+        if (existing && existing.source !== args.source) {
+          // 先复用「本 source 已建立的 -N 页」更新，找不到才在第一个空后缀新建。
+          // 否则本 source 每次重导都再避让一次 → -3/-4/-5… 无限膨胀、旧页陈旧。
+          let own: WikiPage | null = null
+          let free = ''
+          for (let suffix = 2; !own && !free; suffix++) {
+            const candidate = store.readPage(`${p.id}-${suffix}`, cat)
+            if (!candidate) free = `${p.id}-${suffix}`
+            else if (candidate.source === args.source) own = candidate
+          }
+          if (own) { id = own.id; reused = own }
+          else id = free
+        }
         const page = {
-          id: p.id,
+          id,
           title: p.title,
           category: cat,
           tags: p.tags ?? [],
           source: args.source,
           confidence: conf,
-          created: existing?.created ?? now,
+          created: reused && reused.source === args.source ? reused.created : now,
           updated: now,
           body: p.body,
         }
         const res = store.writePage(page)
-        if (res.created) created.push(p.id); else updated.push(p.id)
-        produced.push(p.id)
+        if (res.created) created.push(id); else updated.push(id)
+        produced.push(id)
       }
       const hash = args.contentHash ?? store.sha256(args.source + JSON.stringify(args.pages))
       store.updateManifest(args.source, {
@@ -98,7 +115,7 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
     parameters: {
       title: { type: 'string', required: true },
       body: { type: 'string', required: true, description: '声明式知识内容（非对话记录）' },
-      category: { type: 'string', enum: ['concepts', 'entities', 'references', 'synthesis', 'projects'] },
+      category: { type: 'string', enum: ['concepts', 'entities', 'references', 'synthesis', 'projects', 'dictionaries', 'tables'] },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { page: { type: 'string', required: true } } },
