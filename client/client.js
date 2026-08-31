@@ -424,6 +424,14 @@ window.__ModuleLoader__.load({
 			{
 				value: "projects",
 				label: "项目"
+			},
+			{
+				value: "dictionaries",
+				label: "字典"
+			},
+			{
+				value: "tables",
+				label: "数据结构"
 			}
 		];
 		const DISTILL_TRIGGER = "用 wiki-distill 蒸馏近期 DSH 会话进知识库（先向我确认范围）";
@@ -696,14 +704,18 @@ window.__ModuleLoader__.load({
 			entities: "knj-graph-node--entities",
 			references: "knj-graph-node--references",
 			synthesis: "knj-graph-node--synthesis",
-			projects: "knj-graph-node--projects"
+			projects: "knj-graph-node--projects",
+			dictionaries: "knj-graph-node--dictionaries",
+			tables: "knj-graph-node--tables"
 		};
 		const CATEGORY_LABELS = {
 			concepts: "概念",
 			entities: "实体",
 			references: "参考",
 			synthesis: "综合",
-			projects: "项目"
+			projects: "项目",
+			dictionaries: "字典",
+			tables: "数据结构"
 		};
 		function GraphView({ onOpenNote }) {
 			const [graph, setGraph] = (0, react.useState)(null);
@@ -830,7 +842,7 @@ window.__ModuleLoader__.load({
 			});
 			const legendKeys = [...new Set(graph.nodes.map((n) => n.category))];
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-col",
+				className: "knj-vcol",
 				style: { padding: "4px 12px 12px" },
 				children: [
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -1114,7 +1126,7 @@ window.__ModuleLoader__.load({
 				window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
 			};
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-wiki knj-col",
+				className: "knj-wiki knj-vcol",
 				children: [
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultHeader, {
 						workspaces,
@@ -1141,7 +1153,7 @@ window.__ModuleLoader__.load({
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "knj-grow knj-scroll",
 						children: view === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GraphView, { onOpenNote: openNote }) }, vaultVersion) : results !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "knj-col",
+							className: "knj-vcol",
 							children: [
 								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: "knj-result-head",
@@ -5288,7 +5300,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				breaks: false
 			});
 		}
-		/** DOMPurify 白名单：markdown 呈现所需标签 + wikilink 锚点的 data 属性。 */
+		/** DOMPurify 白名单：markdown 呈现所需标签 + wikilink 锚点的 data 属性。
+		*  img 的 src/alt 必须保留（笔记内嵌图可用）；危险协议由 DOMPurify 默认 URI 规则拦截（javascript: 等被剥）。
+		*  导出供测试做契约断言（Node 无 DOM 测不了 DOMPurify 行为，但能锁住白名单配置）。 */
 		const PURIFY_CONFIG = {
 			ALLOWED_TAGS: [
 				"h1",
@@ -5329,7 +5343,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				"checked",
 				"disabled",
 				"class",
-				"align"
+				"align",
+				"src",
+				"alt"
 			]
 		};
 		/** 已转义文本上的 wikilink → 锚点（回退渲染器行内使用）。 */
@@ -5469,9 +5485,15 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			closeQuote();
 			return out.join("\n");
 		}
-		/** 行内语法：代码、粗体、斜体、删除线。输入已转义（wikilink 由 renderWikilinks 处理）。 */
+		/** 行内语法：图片、代码、粗体、斜体、删除线。输入已转义（wikilink 由 renderWikilinks 处理）。
+		*  图片与浏览器路径的 DOMPurify 白名单同构：仅放行 http(s)/data:image 与无协议的相对路径，
+		*  其他协议（javascript: 等）剥成纯 alt 文本。 */
+		const SAFE_IMG_SRC_RE = /^(https?:|data:image\/)/i;
 		function inline(s) {
-			return s.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\*([^*]+)\*/g, "<em>$1</em>").replace(/~~([^~]+)~~/g, "<del>$1</del>");
+			return s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (_m, alt, url) => {
+				const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(url);
+				return SAFE_IMG_SRC_RE.test(url) || !hasScheme ? `<img src="${url}" alt="${alt}">` : alt;
+			}).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\*([^*]+)\*/g, "<em>$1</em>").replace(/~~([^~]+)~~/g, "<del>$1</del>");
 		}
 		//#endregion
 		//#region src/client/NoteView.tsx
@@ -5731,11 +5753,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				})
 			});
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-wiki",
-				style: {
-					height: "auto",
-					minHeight: "100%"
-				},
+				className: "knj-wiki knj-wb-scroll",
 				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 					style: {
 						padding: "14px 28px 0",
@@ -5804,32 +5822,47 @@ Please report this to https://github.com/markedjs/marked.`, e) {
   --knj-cat-references: var(--dsw-static-amber-400, #f7ad31);
   --knj-cat-synthesis: var(--dsw-static-blue-400, #60a5fa);
   --knj-cat-projects: var(--dsw-static-neutral-500, #7f8287);
+  --knj-cat-dictionaries: var(--dsw-static-purple-400, #c084fc);
+  --knj-cat-tables: var(--dsw-static-cyan-400, #22d3ee);
 
   font-family: var(--dsw-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
   font-size: 13px;
   line-height: 20px;
   color: var(--knj-text);
   height: 100%;
+  /* v9 宽度自防御：宿主链 .panelBody/.workbench/.splitChild 均为 display:flex（默认 row），
+     只声明 height 不声明宽度时，作为行向 flex 子项宽度退化为内容宽度（整个面板"宽度很小"）。
+     width:100% 在 block / flex-column / flex-row 三种父容器下都正确撑满。 */
+  width: 100%;
+  /* v10 外部钳制防御：其他插件/皮肤可能注入全局规则给任意元素设 max-width/min-width
+     （实测 dsh-knj-workflow 的全局 .knj-col 规则 max-width:300px 曾把根节点钳在 ~300px）。
+     根节点显式 max-width:none + min-width:0，不依赖撞名侥幸。 */
+  max-width: none;
+  min-width: 0;
   box-sizing: border-box;
 }
 .knj-wiki *, .knj-wiki *::before, .knj-wiki *::after { box-sizing: border-box; }
 .knj-wiki button, .knj-wiki input, .knj-wiki select, .knj-wiki textarea { font-family: inherit; }
 
 /* ============ 布局 ============ */
-/* 注意：knj-col/knj-grow/knj-scroll 可能直接挂在 .knj-wiki 根节点上（如 WikiSidebar 根），
-   必须同时提供复合选择器 .knj-wiki.knj-col 才能命中同节点双类（后代选择器不匹配自身）。 */
-.knj-wiki .knj-col, .knj-wiki.knj-col { display: flex; flex-direction: column; }
+/* v10 撞名更名：结构布局类用 knj-vcol/knj-hrow——同作者 dsh-knj-workflow 注入未作用域化的
+   全局 .knj-col 规则（flex:1 / min-width:210px / max-width:300px）与 .knj-row 规则（margin-bottom:12px），
+   会钳制/污染同名类。改名后不再处于撞名区（防御契约见 design-system.test.mjs v10）。
+   注意：knj-vcol/knj-grow/knj-scroll 可能直接挂在 .knj-wiki 根节点上（如 WikiSidebar 根），
+   必须同时提供复合选择器 .knj-wiki.knj-vcol 才能命中同节点双类（后代选择器不匹配自身）。 */
+.knj-wiki .knj-vcol, .knj-wiki.knj-vcol { display: flex; flex-direction: column; }
 .knj-wiki .knj-grow { flex: 1 1 auto; min-height: 0; }
 .knj-wiki .knj-scroll { overflow-y: auto; overflow-x: hidden; }
 /* 空态撑满滚动内容区，配合 knj-empty 的 flex 居中实现垂直居中（对齐工作台空态行为） */
 .knj-wiki .knj-scroll > .knj-empty { height: 100%; }
 .knj-wiki .knj-pad { padding: 12px; }
-.knj-wiki .knj-row { display: flex; align-items: center; gap: 8px; }
+.knj-wiki .knj-hrow { display: flex; align-items: center; gap: 8px; }
 .knj-wiki .knj-hairline { border-top: 1px solid var(--knj-border-soft); }
 
 /* ============ 按钮 ============ */
 .knj-wiki .knj-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: auto; /* v10：防 dsh-knj-workflow 全局 .knj-btn{height:32px} 渗入 */
   border: 1px solid transparent; border-radius: var(--knj-radius-s);
   padding: 5px 10px; font-size: 12px; line-height: 18px; font-weight: 500;
   color: var(--knj-text-2); background: transparent; cursor: pointer;
@@ -5862,6 +5895,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 
 /* ============ 输入 / 选择 ============ */
 .knj-wiki .knj-input, .knj-wiki .knj-select {
+  height: auto; /* v10：防 dsh-knj-workflow 全局 .knj-input{height:36px} 渗入 */
   width: 100%; background: var(--knj-bg-2); color: var(--knj-text);
   border: 1px solid var(--knj-border); border-radius: var(--knj-radius-s);
   padding: 6px 10px; font-size: 13px; line-height: 20px; outline: none;
@@ -5879,7 +5913,10 @@ Please report this to https://github.com/markedjs/marked.`, e) {
   background-size: 5px 5px; background-repeat: no-repeat; }
 
 /* ============ 搜索框 ============ */
-.knj-wiki .knj-search { position: relative; }
+/* v10 撞名中和：dsh-knj-workflow 全局 .knj-search{flex:1;min-width:140px;max-width:260px;height:30px;
+   border-radius:999px;border;background;padding:0 12px} 会钳窄/压扁搜索框并做成药丸形，
+   此处显式声明全部漏属性，还原为普通输入框容器（尺寸交给内部 knj-input）。 */
+.knj-wiki .knj-search { position: relative; height: auto; max-width: none; min-width: 0; flex: 0 1 auto; border: none; background: transparent; border-radius: 0; font-size: inherit; }
 .knj-wiki .knj-search__icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--knj-text-3); display: inline-flex; pointer-events: none; }
 .knj-wiki .knj-search__input { padding-left: 32px; padding-right: 30px; }
 .knj-wiki .knj-search__clear { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); }
@@ -5917,6 +5954,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 .knj-wiki .knj-graph-node--references { fill: var(--knj-cat-references); }
 .knj-wiki .knj-graph-node--synthesis { fill: var(--knj-cat-synthesis); }
 .knj-wiki .knj-graph-node--projects { fill: var(--knj-cat-projects); }
+.knj-wiki .knj-graph-node--dictionaries { fill: var(--knj-cat-dictionaries); }
+.knj-wiki .knj-graph-node--tables { fill: var(--knj-cat-tables); }
 .knj-wiki .knj-graph-node--orphan { fill: var(--knj-bg-3); stroke: var(--knj-border-strong); stroke-dasharray: 3 2; }
 .knj-wiki .knj-graph-node--muted { fill: var(--knj-text-dim); }
 
@@ -5997,6 +6036,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 .knj-wiki .knj-graph-label { fill: var(--knj-text-2); font-size: 11px; pointer-events: none; }
 
 /* ============ 笔记工作台 ============ */
+/* v11 滚动根容器：笔记 tab 渲染在右侧面板（宿主 paneContent overflow:hidden，无主区域滚动容器），
+   根容器必须自备 height:100% + overflow-y:auto，内容超高时出现纵向滚动条（修正 v8 的错误假设）。 */
+.knj-wiki.knj-wb-scroll { height: 100%; overflow-y: auto; overflow-x: hidden; }
 .knj-wiki .knj-wb { padding: 20px 28px 48px; max-width: 880px; margin: 0 auto; }
 .knj-wiki .knj-wb__title { margin: 0 0 4px; font-size: var(--dsw-font-xl-24-font-size, 24px); line-height: var(--dsw-font-xl-24-line-height, 32px); font-weight: 600; color: var(--knj-text); word-break: break-word; }
 .knj-wiki .knj-wb__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 12px; color: var(--knj-text-3); }
@@ -6049,6 +6091,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			style.textContent = WIKI_CSS;
 			document.head.appendChild(style);
 		}
+		/** 移除注入样式（幂等）：插件卸载/HMR 时调用，避免旧版本样式常驻 DOM。 */
+		function removeWikiStyles() {
+			if (typeof document === "undefined") return;
+			document.getElementById("dsh-knj-obsidian-styles")?.remove();
+		}
 		//#endregion
 		//#region src/client/index.ts
 		/**
@@ -6092,6 +6139,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				}));
 				return () => {
 					for (const d of disposers) d();
+					removeWikiStyles();
 				};
 			}, "dsh-knj-obsidian: sidebar tabs");
 		}
