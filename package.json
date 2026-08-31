@@ -1,6 +1,6 @@
 {
   "name": "dsh-knj-obsidian",
-  "version": "2026.8.283",
+  "version": "2026.9.10",
   "description": "DSH 内置版 Obsidian：AI agent 知识库的构建、检索、图谱、UI 与增量构建（v1 构建 + v2 检索 + v3 图谱 + v4 UI + v5 笔记编辑 + v6 增量构建 + v7 多库管理）",
   "type": "module",
   "main": "lib/index.js",
