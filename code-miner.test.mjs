@@ -68,3 +68,72 @@ test('parseJavaFile 行号定位', () => {
   assert.equal(st.line, 6, 'enum 声明行')
   assert.equal(st.values[0].line, 7, '第一个值行')
 })
+
+// ==================== M2 表结构挖掘 ====================
+import { mineTables, parseDdlFile, parseMapperXml, parseJpaEntity, mergeTables } from './lib/code-miner.js'
+const FIX_DB = join(ROOT, 'test-fixtures', 'mining-db')
+
+test('M2 tableMiner 解析 CREATE TABLE（列/主键/唯一键/表注释）', () => {
+  const { tables } = mineTables(FIX_DB)
+  const o = tables.find((t) => t.table === 't_order')
+  assert.ok(o, '应挖到 t_order')
+  assert.equal(o.columns.length, 4)
+  assert.equal(o.columns[0].name, 'id')
+  assert.equal(o.columns[0].primaryKey, true)
+  assert.equal(o.columns[0].type, 'BIGINT')
+  assert.equal(o.columns[1].comment, '订单号')
+  assert.equal(o.columns[3].nullable, true)
+  assert.equal(o.comment, '订单表')
+  assert.ok(o.indexes.some((i) => i.name === 'uk_order_no' && i.unique))
+})
+
+test('M2 tableMiner 解析 CREATE INDEX 与外键', () => {
+  const { tables } = mineTables(FIX_DB)
+  const o = tables.find((t) => t.table === 't_order')
+  assert.ok(o.indexes.some((i) => i.name === 'idx_status' && !i.unique), '独立 CREATE INDEX 应并入')
+  const item = tables.find((t) => t.table === 't_order_item')
+  assert.ok(item, '应挖到 t_order_item')
+  assert.ok(item.relations.some((r) => r.from === 'order_id' && r.toTable === 't_order' && r.toColumn === 'id'))
+})
+
+test('M2 tableMiner 候选携带哈希与来源', () => {
+  const { tables } = mineTables(FIX_DB)
+  for (const t of tables) {
+    assert.ok(t.hash, '候选应携带哈希')
+    assert.ok(t.sources.includes('ddl'), '来源应含 ddl')
+  }
+})
+
+test('M2 parseMapperXml 解析列清单与表引用', () => {
+  const text = readFileSync(join(FIX_DB, 'OrderMapper.xml'), 'utf8')
+  const parsed = parseMapperXml('mapper/OrderMapper.xml', text)
+  assert.ok(parsed.length >= 1, '应从 mapper 挖到表')
+  const t = parsed.find((x) => x.table === 't_order')
+  assert.ok(t, '应识别 t_order')
+  assert.ok(t.sources.includes('mapper'), '来源应含 mapper')
+  assert.ok(t.columns.length >= 4, '应含 Base_Column_List 的列')
+})
+
+test('M2 parseJpaEntity 解析 @Table/@Column/@Id', () => {
+  const text = readFileSync(join(FIX_DB, 'OrderEntity.java'), 'utf8')
+  const parsed = parseJpaEntity('entity/OrderEntity.java', text)
+  assert.equal(parsed.length, 1, '应从 Entity 挖到 1 表')
+  const t = parsed[0]
+  assert.equal(t.table, 't_order')
+  assert.ok(t.sources.includes('jpa'), '来源应含 jpa')
+  assert.equal(t.columns.length, 3)
+  assert.equal(t.columns[0].primaryKey, true, 'id 应为主键')
+  assert.equal(t.columns[1].nullable, false, 'nullable=false 应映射')
+})
+
+test('M2 mergeTables 多来源合并：DDL 优先', () => {
+  const ddl = parseDdlFile('db/schema.sql', readFileSync(join(FIX_DB, 'schema.sql'), 'utf8'))
+  const mapper = parseMapperXml('mapper/OrderMapper.xml', readFileSync(join(FIX_DB, 'OrderMapper.xml'), 'utf8'))
+  const jpa = parseJpaEntity('entity/OrderEntity.java', readFileSync(join(FIX_DB, 'OrderEntity.java'), 'utf8'))
+  const merged = mergeTables([...ddl, ...mapper, ...jpa])
+  const t = merged.find((x) => x.table === 't_order')
+  assert.ok(t, '合并后应保留 t_order')
+  assert.equal(t.sources.length, 3, '三个来源都应记录')
+  assert.equal(t.columns.length, 4, 'DDL 列定义优先')
+  assert.equal(t.columns[0].type, 'BIGINT', 'DDL 类型保留')
+})
