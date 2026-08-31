@@ -9,6 +9,8 @@ import { retrieve } from './retriever.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildGraph, exportGraphHtml } from './graph-engine.ts'
+import { mineEnums } from './code-miner.ts'
+import { readProgress, markModule, pendingModules, progressFileFor } from './mining-progress.ts'
 
 /** 每个工具执行时解析当前库（v7：agent 工具跟随 UI 切换的当前库）。 */
 function currentStore(provider: VaultProvider): VaultStore {
@@ -240,6 +242,160 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
       const content = format === 'json' ? JSON.stringify(graph, null, 2) : exportGraphHtml(graph)
       writeFileSync(join(exportDir, file), content, 'utf8')
       return { file: `wiki-export/${file}`, nodeCount: graph.nodes.length, edgeCount: graph.edges.length }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'wiki_mine',
+    description: '从当前工作区项目静态挖掘代码结构候选（枚举字典/表结构），供蒸馏后经 wiki_ingest 入库。大纲→细节两阶段；每次运行输出枚举级对账报告（new/changed/unchanged/deleted）：未挖=new、挖过无变=unchanged、有变化=changed、代码已删=deleted。resume 时按 progress.json 只处理未完成模块，断点续传。',
+    parameters: {
+      kind: { type: 'string', enum: ['enum', 'db', 'both'], description: '挖掘类型：enum=枚举字典；db=表结构（M2 实现）；both=两者' },
+      module: { type: 'string', description: '模块过滤（可选）：只挖指定模块' },
+      resume: { type: 'boolean', description: '断点续传：读 progress.json 只处理 pending/partial 模块' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          enums: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                name: { type: 'string' }, module: { type: 'string' }, file: { type: 'string' },
+                line: { type: 'number' }, kind: { type: 'string' }, hash: { type: 'string' },
+                values: {
+                  type: 'array',
+                  items: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                      name: { type: 'string' }, code: { type: 'string' },
+                      label: { type: 'string' }, line: { type: 'number' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          new: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                name: { type: 'string' }, module: { type: 'string' }, file: { type: 'string' },
+                line: { type: 'number' }, kind: { type: 'string' }, hash: { type: 'string' },
+                values: {
+                  type: 'array',
+                  items: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                      name: { type: 'string' }, code: { type: 'string' },
+                      label: { type: 'string' }, line: { type: 'number' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          changed: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                name: { type: 'string' }, module: { type: 'string' }, file: { type: 'string' },
+                line: { type: 'number' }, kind: { type: 'string' }, hash: { type: 'string' },
+                values: {
+                  type: 'array',
+                  items: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                      name: { type: 'string' }, code: { type: 'string' },
+                      label: { type: 'string' }, line: { type: 'number' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          unchanged: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                name: { type: 'string' }, module: { type: 'string' }, file: { type: 'string' },
+                line: { type: 'number' }, kind: { type: 'string' }, hash: { type: 'string' },
+                values: {
+                  type: 'array',
+                  items: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                      name: { type: 'string' }, code: { type: 'string' },
+                      label: { type: 'string' }, line: { type: 'number' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          deleted: { type: 'array', items: { type: 'string' }, required: true },
+          outline: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                module: { type: 'string' }, fileCount: { type: 'number' }, enumEstimate: { type: 'number' },
+              },
+            },
+          },
+          modules: { type: 'array', items: { type: 'string' }, required: true },
+          remaining: { type: 'number', required: true },
+          note: { type: 'string' },
+        },
+      },
+      render: (_args, value) => {
+        const base = `挖掘：${value.modules.length} 模块 / 枚举 ${value.new.length} 新 · ${value.changed.length} 变 · ${value.unchanged.length} 无变 · ${value.deleted.length} 删，剩 ${value.remaining} 模块待挖`
+        return [{ type: 'text', text: value.enums.length === 0 && value.deleted.length === 0 ? `${base}（${value.note ?? ''}）` : base }]
+      },
+    },
+    async execute(args) {
+      const store = currentStore(provider)
+      const projectRoot = join(store.wikiRoot, '..') // .wiki 的父目录 = 项目根
+      const kind = args.kind ?? 'both'
+      const progressFile = progressFileFor(store.wikiRoot, 'enum')
+      const progress = readProgress(progressFile, 'enum')
+      const resumeOnly = args.resume ? new Set(pendingModules(progress)) : null
+      const enumResult = (kind === 'enum' || kind === 'both')
+        ? mineEnums(projectRoot, args.module)
+        : { enums: [], outline: [], modules: [] }
+      let enums = enumResult.enums
+      if (resumeOnly && enums.length > 0) enums = enums.filter((e) => resumeOnly.has(e.module))
+
+      // ---- 对账：全量扫描候选 ↔ manifest 记录 ----
+      const newE: typeof enums = []
+      const changedE: typeof enums = []
+      const unchangedE: typeof enums = []
+      const scannedFiles = new Set(enums.map((e) => e.file))
+      for (const e of enums) {
+        const prev = store.manifestEntry(`mine:enum:${e.file}`)
+        if (!prev) newE.push(e)
+        else if (prev.content_hash === e.hash) unchangedE.push(e)
+        else changedE.push(e)
+      }
+      // deleted：manifest 有 mine:enum:* 记录但当前扫描无此文件
+      const deleted: string[] = []
+      for (const src of store.manifestSources()) {
+        if (src.startsWith('mine:enum:') && !scannedFiles.has(src.slice('mine:enum:'.length))) {
+          deleted.push(src.slice('mine:enum:'.length))
+        }
+      }
+
+      const note = enums.length === 0 && deleted.length === 0
+        ? '当前项目未发现枚举声明或常量类' : undefined
+      return {
+        enums, new: newE, changed: changedE, unchanged: unchangedE, deleted,
+        outline: enumResult.outline, modules: enumResult.modules,
+        remaining: resumeOnly ? resumeOnly.size : enumResult.modules.length, note,
+      }
     },
   }))
 

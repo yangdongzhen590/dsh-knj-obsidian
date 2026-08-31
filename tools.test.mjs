@@ -35,7 +35,7 @@ test('mountTools 注册 wiki_ingest + wiki_capture + wiki_lint + wiki_query 并�
   const fakeCtx = { tools: { register: (def) => registered.push(def) } }
   const dispose = mountTools(fakeCtx, store)
   const names = registered.map((d) => d.name)
-  assert.deepEqual(names.sort(), ['wiki_capture', 'wiki_export', 'wiki_ingest', 'wiki_lint', 'wiki_query'])
+  assert.deepEqual(names.sort(), ['wiki_capture', 'wiki_export', 'wiki_ingest', 'wiki_lint', 'wiki_mine', 'wiki_query'])
   assert.equal(typeof dispose, 'function')
 })
 
@@ -200,4 +200,89 @@ test('wiki_ingest/wiki_capture 工具 category 枚举含 dictionaries/tables', (
   for (const m of matches) {
     assert.ok(m[1], `enum 应含新分类：${m[0]}`)
   }
+})
+
+// ---- wiki_mine 工具（枚举字典挖掘候选 + 对账报告） ----
+import { mkdirSync, cpSync } from 'node:fs'
+
+/** 构造「项目根 + .wiki」：把 fixture 的 java 文件拷进项目根，store 指向其 .wiki。 */
+function makeMineVault() {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-obsidian-mine-'))
+  // fixture 目录本身即项目根（含 OrderEnum/PaymentConstants/SimpleFlag 的 java）
+  cpSync(join(fileURLToPath(new URL('.', import.meta.url)), 'test-fixtures', 'mining'), join(dir, 'src'), { recursive: true })
+  const store = new VaultStore(dir)
+  store.ensure()
+  return { dir, store }
+}
+
+test('wiki_mine 注册并对账：全量 new（首次挖掘）', async (t) => {
+  const { dir, store } = makeMineVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  const fakeCtx = { tools: { register: (def) => registered.push(def) } }
+  mountTools(fakeCtx, { current: () => store })
+  const def = registered.find((d) => d.name === 'wiki_mine')
+  assert.ok(def, 'wiki_mine 应已注册')
+  const res = await def.execute({ kind: 'enum', module: 'order' }, EXEC)
+  assert.equal(res.enums.length, 1, 'order 模块应挖到 OrderStatus')
+  assert.equal(res.new.length, 1, '首次挖掘全部 new')
+  assert.equal(res.unchanged.length, 0)
+  assert.equal(res.changed.length, 0)
+})
+
+test('wiki_mine 对账：同哈希→unchanged，改哈希→changed', async (t) => {
+  const { dir, store } = makeMineVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  const fakeCtx = { tools: { register: (def) => registered.push(def) } }
+  mountTools(fakeCtx, { current: () => store })
+  const def = registered.find((d) => d.name === 'wiki_mine')
+  const first = await def.execute({ kind: 'enum' }, EXEC)
+  assert.ok(first.enums.length >= 3, '应挖到多个枚举/常量类')
+  // 模拟入库：把 manifest 记录为同哈希
+  for (const e of first.enums) {
+    store.updateManifest(`mine:enum:${e.file}`, {
+      content_hash: e.hash, last_ingested: new Date().toISOString(), pages_produced: [e.name.toLowerCase()],
+    })
+  }
+  const again = await def.execute({ kind: 'enum' }, EXEC)
+  assert.equal(again.new.length, 0, '同哈希不应再 new')
+  assert.equal(again.unchanged.length, first.enums.length, '同哈希应为 unchanged')
+  assert.equal(again.changed.length, 0)
+  // 改哈希：把 manifest 记录改成错哈希
+  for (const e of first.enums) {
+    store.updateManifest(`mine:enum:${e.file}`, {
+      content_hash: 'stale-hash', last_ingested: new Date().toISOString(), pages_produced: [e.name.toLowerCase()],
+    })
+  }
+  const third = await def.execute({ kind: 'enum' }, EXEC)
+  assert.equal(third.changed.length, first.enums.length, '哈希不一致应为 changed')
+})
+
+test('wiki_mine 对账：manifest 有记录但文件消失 → deleted', async (t) => {
+  const { dir, store } = makeMineVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  const fakeCtx = { tools: { register: (def) => registered.push(def) } }
+  mountTools(fakeCtx, { current: () => store })
+  const def = registered.find((d) => d.name === 'wiki_mine')
+  store.updateManifest('mine:enum:ghost/Removed.java', {
+    content_hash: 'abc', last_ingested: new Date().toISOString(), pages_produced: ['removed'],
+  })
+  const res = await def.execute({ kind: 'enum' }, EXEC)
+  assert.ok(res.deleted.some((d) => d.includes('ghost/Removed.java')), '应检测到已消失源文件')
+})
+
+test('wiki_mine 空结果不报错', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const registered = []
+  const fakeCtx = { tools: { register: (def) => registered.push(def) } }
+  mountTools(fakeCtx, { current: () => store })
+  const def = registered.find((d) => d.name === 'wiki_mine')
+  // makeVault 的临时目录无代码可扫
+  const res = await def.execute({ kind: 'enum' }, EXEC)
+  assert.deepEqual(res.enums, [])
+  assert.deepEqual(res.new, [])
+  assert.ok(res.note, '空结果应带 note')
 })

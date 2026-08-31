@@ -274,6 +274,11 @@ export class VaultStore implements VaultProvider {
     return this.loadManifest().sources[source]
   }
 
+  /** 全部已记录来源 key 列表（对账 deleted 判定用）。 */
+  manifestSources(): string[] {
+    return Object.keys(this.loadManifest().sources)
+  }
+
   updateManifest(source: string, entry: ManifestEntry): void {
     const m = this.loadManifest()
     m.sources[source] = entry
