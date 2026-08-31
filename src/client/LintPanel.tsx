@@ -14,6 +14,8 @@ const CATEGORIES = [
   { value: 'entities', label: '实体' },
   { value: 'synthesis', label: '综合' },
   { value: 'projects', label: '项目' },
+  { value: 'dictionaries', label: '字典' },
+  { value: 'tables', label: '数据结构' },
 ]
 
 const DISTILL_TRIGGER = '用 wiki-distill 蒸馏近期 DSH 会话进知识库（先向我确认范围）'

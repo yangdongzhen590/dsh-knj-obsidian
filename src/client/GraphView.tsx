@@ -21,10 +21,12 @@ function esc(s: string): string {
 const CATEGORY_CLASS: Record<string, string> = {
   concepts: 'knj-graph-node--concepts', entities: 'knj-graph-node--entities',
   references: 'knj-graph-node--references', synthesis: 'knj-graph-node--synthesis', projects: 'knj-graph-node--projects',
+  dictionaries: 'knj-graph-node--dictionaries', tables: 'knj-graph-node--tables',
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
   concepts: '概念', entities: '实体', references: '参考', synthesis: '综合', projects: '项目',
+  dictionaries: '字典', tables: '数据结构',
 }
 
 export function GraphView({ onOpenNote }: { onOpenNote: (id: string, category: string, title: string) => void }) {
@@ -124,7 +126,7 @@ export function GraphView({ onOpenNote }: { onOpenNote: (id: string, category: s
 
   const legendKeys = [...new Set(graph.nodes.map((n) => n.category))]
 
-  return <div className="knj-col" style={{ padding: '4px 12px 12px' }}>
+  return <div className="knj-vcol" style={{ padding: '4px 12px 12px' }}>
     <div className="knj-graph-head">
       <span className="knj-graph-stats">{graph.nodes.length} 节点 · {graph.edges.length} 边</span>
       <span className="knj-statusbar__spacer" />

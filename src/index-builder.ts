@@ -9,6 +9,8 @@ import type { WikiCategory } from './types.ts'
 const SECTION_TITLES: Array<{ category: WikiCategory; title: string }> = [
   { category: 'concepts', title: '## 概念页' },
   { category: 'entities', title: '## 实体页' },
+  { category: 'dictionaries', title: '## 字典' },
+  { category: 'tables', title: '## 数据结构' },
   { category: 'references', title: '## 参考资料' },
   { category: 'synthesis', title: '## 综合' },
   { category: 'projects', title: '## 项目知识' },
