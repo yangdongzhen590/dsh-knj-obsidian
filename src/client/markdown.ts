@@ -53,12 +53,14 @@ export function parseWithMarked(text: string): string {
   return marked.parse(text, { async: false, gfm: true, breaks: false }) as string
 }
 
-/** DOMPurify 白名单：markdown 呈现所需标签 + wikilink 锚点的 data 属性。 */
-const PURIFY_CONFIG = {
+/** DOMPurify 白名单：markdown 呈现所需标签 + wikilink 锚点的 data 属性。
+ *  img 的 src/alt 必须保留（笔记内嵌图可用）；危险协议由 DOMPurify 默认 URI 规则拦截（javascript: 等被剥）。
+ *  导出供测试做契约断言（Node 无 DOM 测不了 DOMPurify 行为，但能锁住白名单配置）。 */
+export const PURIFY_CONFIG = {
   ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'hr', 'strong', 'em', 'del', 's',
     'ul', 'ol', 'li', 'input', 'blockquote', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
     'a', 'span', 'div', 'img'],
-  ALLOWED_ATTR: ['href', 'data-wikilink', 'type', 'checked', 'disabled', 'class', 'align'],
+  ALLOWED_ATTR: ['href', 'data-wikilink', 'type', 'checked', 'disabled', 'class', 'align', 'src', 'alt'],
 }
 
 /** 已转义文本上的 wikilink → 锚点（回退渲染器行内使用）。 */
@@ -169,9 +171,18 @@ function renderFallback(text: string): string {
   return out.join('\n')
 }
 
-/** 行内语法：代码、粗体、斜体、删除线。输入已转义（wikilink 由 renderWikilinks 处理）。 */
+/** 行内语法：图片、代码、粗体、斜体、删除线。输入已转义（wikilink 由 renderWikilinks 处理）。
+ *  图片与浏览器路径的 DOMPurify 白名单同构：仅放行 http(s)/data:image 与无协议的相对路径，
+ *  其他协议（javascript: 等）剥成纯 alt 文本。 */
+export const SAFE_IMG_SRC_RE = /^(https?:|data:image\/)/i
+
 function inline(s: string): string {
   return s
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (_m, alt: string, url: string) => {
+      const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(url)
+      const safe = SAFE_IMG_SRC_RE.test(url) || !hasScheme
+      return safe ? `<img src="${url}" alt="${alt}">` : alt
+    })
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')

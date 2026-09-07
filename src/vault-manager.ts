@@ -1,8 +1,8 @@
 // src/vault-manager.ts
 // v7 多 vault 管理：注册表（持久化）+ 当前库切换 + 新建/挂接/移除 + 工作区自动发现。
 // 注册表只记录库的「身份与指向」，绝不移动/删除磁盘上的库文件。
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { VaultStore } from './vault-store.ts'
 import { vaultIdOf } from './types.ts'
 import type { VaultListEntry, VaultProvider, VaultRecord } from './types.ts'
@@ -26,6 +26,8 @@ interface RegistryFile {
   version: 1
   currentVaultId: string | null
   vaults: VaultRecord[]
+  /** 用户显式移除过的库根目录（resolve 后）：种子每次启动都会重加，必须记住移除决定 */
+  removedRoots?: string[]
 }
 
 function defaultNameFor(root: string, seeds: WorkspaceSeed[]): string {
@@ -38,15 +40,16 @@ function defaultNameFor(root: string, seeds: WorkspaceSeed[]): string {
 export class VaultManager implements VaultProvider {
   private registry: RegistryFile = { version: 1, currentVaultId: null, vaults: [] }
   private readonly seeds: WorkspaceSeed[]
+  /** root → VaultStore 复用：VaultStore 携带 mtime 页缓存，按请求新建实例会让缓存永远失效 */
+  private readonly stores = new Map<string, VaultStore>()
 
   constructor(private readonly opts: VaultManagerOptions) {
     this.seeds = opts.workspaceRoots ?? []
     this.load()
     this.seed()
-    this.persist()
   }
 
-  // ---------- 持久化 ----------
+  // ---------- 持久化（tmp+rename 原子写；仅内容变化时写盘） ----------
 
   private load(): void {
     try {
@@ -60,6 +63,7 @@ export class VaultManager implements VaultProvider {
           vaults: raw.vaults
             .filter((v): v is VaultRecord => !!v && typeof v.root === 'string' && typeof v.name === 'string')
             .map((v) => ({ id: vaultIdOf(v.root), name: v.name, root: resolve(v.root), source: v.source })),
+          removedRoots: Array.isArray(raw.removedRoots) ? raw.removedRoots.filter((r) => typeof r === 'string') : [],
         }
       }
     } catch {
@@ -67,16 +71,32 @@ export class VaultManager implements VaultProvider {
     }
   }
 
+  /** 原子写：tmp + rename（崩溃不会留下截断的半份注册表；Windows rename 被占用时回退直接写）。 */
   private persist(): void {
-    mkdirSync(join(this.opts.registryFile, '..'), { recursive: true })
-    writeFileSync(this.opts.registryFile, JSON.stringify(this.registry, null, 2), 'utf8')
+    mkdirSync(dirname(this.opts.registryFile), { recursive: true })
+    const json = JSON.stringify(this.registry, null, 2)
+    const tmp = this.opts.registryFile + '.tmp-' + Date.now()
+    writeFileSync(tmp, json, 'utf8')
+    try {
+      renameSync(tmp, this.opts.registryFile)
+    } catch {
+      try { rmSync(tmp, { force: true }) } catch { /* best effort */ }
+      writeFileSync(this.opts.registryFile, json, 'utf8')
+    }
   }
 
-  // ---------- 种子（幂等，每次启动执行） ----------
+  private persistIfChanged(before: string): void {
+    if (JSON.stringify(this.registry) !== before) this.persist()
+  }
+
+  // ---------- 种子（幂等，每次启动执行；尊重 removedRoots 的移除决定） ----------
 
   private seed(): void {
+    const before = JSON.stringify(this.registry)
+    const removed = new Set((this.registry.removedRoots ?? []).map((r) => resolve(r)))
     const add = (root: string, source: VaultRecord['source']): void => {
       const r = resolve(root)
+      if (removed.has(r)) return
       if (this.registry.vaults.some((v) => resolve(v.root) === r)) return
       this.registry.vaults.push({ id: vaultIdOf(r), name: defaultNameFor(r, this.seeds), root: r, source })
     }
@@ -91,6 +111,7 @@ export class VaultManager implements VaultProvider {
       const first = this.registry.vaults.find((v) => resolve(v.root) === resolve(this.opts.cwdRoot)) ?? this.registry.vaults[0]
       this.registry.currentVaultId = first?.id ?? null
     }
+    this.persistIfChanged(before)
   }
 
   // ---------- VaultProvider ----------
@@ -103,17 +124,32 @@ export class VaultManager implements VaultProvider {
     return this.find(this.registry.currentVaultId) ?? this.registry.vaults[0] ?? null
   }
 
+  /** 按根取复用的 VaultStore（首次创建时可选 ensure 脚手架）。 */
+  private storeFor(root: string, ensure: boolean): VaultStore {
+    const r = resolve(root)
+    let store = this.stores.get(r)
+    if (!store) {
+      store = new VaultStore(r)
+      this.stores.set(r, store)
+      if (ensure) store.ensure()
+    }
+    return store
+  }
+
   current(): VaultStore {
     const rec = this.currentRecord()
     if (!rec) {
       // 防御：seed 后至少存在 cwd 库；仍兜底直接以 cwd 建库
-      const fallback = new VaultStore(this.opts.cwdRoot)
-      fallback.ensure()
-      return fallback
+      return this.storeFor(this.opts.cwdRoot, true)
     }
-    const store = new VaultStore(rec.root)
-    store.ensure()
-    return store
+    return this.storeFor(rec.root, true)
+  }
+
+  /** 只读视图：返回复用 store，绝不 ensure()/mkdir（GET 端点零写副作用）。 */
+  currentReadonly(): VaultStore {
+    const rec = this.currentRecord()
+    if (!rec) return this.storeFor(this.opts.cwdRoot, false)
+    return this.storeFor(rec.root, false)
   }
 
   switchVault(id: string): VaultRecord | null {
@@ -137,7 +173,12 @@ export class VaultManager implements VaultProvider {
     const r = resolve(root)
     // 目录不存在 → 自动创建（新建库）；已存在 → 直接挂接。库文件永不删除/移动。
     if (!existsSync(r)) mkdirSync(r, { recursive: true })
-    new VaultStore(r).ensure() // 脚手架 .wiki（index/manifest/分类目录，零页面）
+    this.storeFor(r, true).ensure() // 脚手架 .wiki（index/manifest/分类目录，零页面）
+    // 显式挂接是最强的回来意图：清除历史移除标记
+    const removed = this.registry.removedRoots ?? []
+    if (removed.some((x) => resolve(x) === r)) {
+      this.registry.removedRoots = removed.filter((x) => resolve(x) !== r)
+    }
     const existing = this.registry.vaults.find((v) => resolve(v.root) === r)
     if (existing) {
       if (name?.trim()) {
@@ -156,9 +197,11 @@ export class VaultManager implements VaultProvider {
   removeVault(id: string): boolean {
     const idx = this.registry.vaults.findIndex((v) => v.id === id)
     if (idx === -1) return false
-    // 工作区/cwd 种子库是「真实存在的库」，只允许从列表移除显式挂接的库
-    if (this.registry.vaults[idx].source !== 'attached') return false
+    // 任何来源的库都可移除：cwd/workspace 种子每次启动会重新尝试加入，
+    // 因此把根目录记入 removedRoots 才能让移除在重启后仍然生效（显式 attach 可解除）。
+    const removedRoot = resolve(this.registry.vaults[idx].root)
     this.registry.vaults.splice(idx, 1)
+    this.registry.removedRoots = [...(this.registry.removedRoots ?? []), removedRoot]
     if (this.registry.currentVaultId === id) {
       this.registry.currentVaultId = this.registry.vaults[0]?.id ?? null
     }
@@ -175,7 +218,7 @@ export class VaultManager implements VaultProvider {
 
   private countPages(root: string): number {
     try {
-      return new VaultStore(root).listPagesReadonly().length
+      return this.storeFor(root, false).listPagesReadonly().length
     } catch {
       return 0
     }

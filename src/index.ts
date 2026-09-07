@@ -26,13 +26,17 @@ function defaultRegistryPath(): string {
 }
 
 export function apply(ctx: Context, config?: Config): void {
-  // workspaceRegistry：宿主工作区注册表（dsh-workspace），用于自动发现各工作区的库
-  ctx.inject(['tools', 'webServer', 'workspaceRegistry'], (hostCtx: Context) => {
+  // ⚠️ workspaceRegistry 是「可选」依赖，绝不能写进 inject 数组：cordis 对硬依赖缺失的
+  // entry 置 INACTIVE，回调永不执行——routes 和 tools 会整体静默失效（宿主改名/移除该服务时）。
+  // tools/webServer 由官方 base bundles 保证提供，是安全的核心依赖。
+  ctx.inject(['tools', 'webServer'], (hostCtx: Context) => {
     const host = hostCtx as unknown as WikiHost
-    // 防御性读取：即使注入后也容忍服务异常，失败仅回退 cwd 单库
+    // 防御性读取 workspaceRegistry：注入后容忍服务异常/缺失，失败仅回退 cwd 单库
     let workspaceRoots: Array<{ path: string; title?: string }> = []
     try {
-      const registry = (hostCtx as unknown as { workspaceRegistry?: WorkspaceRegistryLike }).workspaceRegistry
+      const withGet = hostCtx as unknown as { workspaceRegistry?: WorkspaceRegistryLike; get?: (name: string) => unknown }
+      const registry = withGet.workspaceRegistry
+        ?? (typeof withGet.get === 'function' ? withGet.get('workspaceRegistry') as WorkspaceRegistryLike | undefined : undefined)
       workspaceRoots = registry?.list() ?? []
     } catch {
       // 宿主未提供 workspaceRegistry：仅 cwd 种子，不阻塞启动

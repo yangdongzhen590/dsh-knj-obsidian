@@ -55,6 +55,14 @@ export const IconFile = ({ size = 16, ...rest }: IconProps) => (
   <svg {...base(size)} {...rest}><path d="M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z" /><path d="M14 2v5h5" /></svg>
 )
 
+export const IconExpand = ({ size = 16, ...rest }: IconProps) => (
+  <svg {...base(size)} {...rest}><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></svg>
+)
+
+export const IconCompress = ({ size = 16, ...rest }: IconProps) => (
+  <svg {...base(size)} {...rest}><path d="M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5" /></svg>
+)
+
 export const IconGraph = ({ size = 16, ...rest }: IconProps) => (
   <svg {...base(size)} {...rest}><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="8" r="2.5" /><circle cx="9" cy="18" r="2.5" /><path d="m8 7.4 8.2 1.2M7.6 8l1.8 8M15.8 9.6 10.2 16.4" /></svg>
 )

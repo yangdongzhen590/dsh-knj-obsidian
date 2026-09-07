@@ -1,6 +1,6 @@
 // vault-manager.test.mjs — v7 多 vault 注册表测试（先红后绿）。
-// 覆盖：种子（cwd + 工作区）、切换、按目录激活、新建/挂接、移除（仅 attached、不动磁盘）、
-// 注册表损坏重建、持久化重启保持。
+// 覆盖：种子（cwd + 工作区）、切换、按目录激活、新建/挂接、移除（任意来源可移除、
+// 重启不复活、显式挂接可找回、不动磁盘）、注册表损坏重建、持久化重启保持。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
@@ -86,11 +86,22 @@ test('attachRoot：目录不存在自动创建；同根幂等返回同一 id', (
   assert.equal(m.listVaults().filter((v) => v.root === a).length, 1)
 })
 
-test('removeVault：仅 attached 可移除；工作区/cwd 库拒绝；磁盘文件保留', (t) => {
+test('removeVault：任意来源可移除、重启后不复活、显式挂接可找回；磁盘文件保留', (t) => {
   const s = setup(t, ['proj-a'])
   const m = makeManager(s)
   const wsVault = m.listVaults().find((v) => v.source === 'workspace')
-  assert.equal(m.removeVault(wsVault.id), false, 'workspace 库不可移除')
+  // 新语义：workspace/cwd 种子也可移除（旧版只许移除 attached，陈旧种子随启动无限积累）。
+  // 移除决定记入 removedRoots，重启后种子不再自动加回。
+  assert.equal(m.removeVault(wsVault.id), true, 'workspace 库也可移除')
+  assert.ok(existsSync(join(wsVault.root)), '移除注册不删磁盘目录')
+  assert.ok(!m.listVaults().some((v) => v.id === wsVault.id))
+  // 重启（重建 manager）：removedRoots 生效，种子不复活
+  const m2 = makeManager(s)
+  assert.ok(!m2.listVaults().some((v) => v.root === wsVault.root), '移除决定跨重启生效')
+  // 显式挂接清除移除标记，库可找回
+  m2.attachRoot(wsVault.root)
+  assert.ok(m2.listVaults().some((v) => v.root === wsVault.root), '显式挂接找回已移除的库')
+
   const attached = m.attachRoot(join(s.dir, 'remove-me'))
   m.switchVault(attached.id)
   assert.equal(m.removeVault(attached.id), true)

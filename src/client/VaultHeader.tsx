@@ -12,17 +12,29 @@ import { IconBook, IconChevronDown, IconGear, IconPlus, IconTrash } from './icon
 /** 客户端工作区服务的最小结构面（宿主 dsh-client-runtime 提供；缺失时仅手动切换）。 */
 export interface WorkspaceFace {
   list: {
-    getSnapshot(): { items: readonly WorkspaceView[]; recentWorkspaceId?: string; baselinesReady?: boolean }
+    getSnapshot(): { items: readonly WorkspaceView[]; recentWorkspaceId?: string; baselinesReady?: boolean; state?: string; phase?: string }
     subscribe(cb: () => void): () => void
   }
   pickDirectory?(): Promise<string | null>
 }
 
-interface WorkspaceView { id: string; title?: string; path?: string }
+/** 客户端会话服务的最小结构面（宿主 dsh-client-runtime 提供）：读「当前选中会话」及其 cwd。 */
+export interface SessionFace {
+  list: {
+    getSnapshot(): { current?: string; byId?: Record<string, { cwd?: string }> }
+    subscribe(cb: () => void): () => void
+  }
+}
+
+interface WorkspaceView { id: string; title?: string; path?: string; sessionIds?: readonly string[] }
 
 const SOURCE_LABEL: Record<string, string> = { cwd: '默认', workspace: '工作区', attached: '挂接' }
 
-export function VaultHeader({ workspaces, onVaultChanged }: { workspaces?: WorkspaceFace; onVaultChanged: () => void }) {
+export function VaultHeader({ workspaces, sessions, onVaultChanged }: {
+  workspaces?: WorkspaceFace
+  sessions?: SessionFace
+  onVaultChanged: () => void
+}) {
   const [current, setCurrent] = useState<VaultInfo | null>(null)
   const [vaults, setVaults] = useState<VaultListEntry[]>([])
   const [notice, setNotice] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null)
@@ -32,6 +44,8 @@ export function VaultHeader({ workspaces, onVaultChanged }: { workspaces?: Works
   const [busy, setBusy] = useState(false)
   // 已激活过的工作区目录（避免重复激活打转）
   const activatedRootRef = useRef<string | null>(null)
+  // 临时诊断：跟随决策依据（sessions 可用性 + current/recent/目标），定位"没跟会话走"问题
+  const [diag, setDiag] = useState('')
 
   const flash = (text: string, kind: 'ok' | 'err' = 'ok') => {
     setNotice({ text, kind })
@@ -48,21 +62,41 @@ export function VaultHeader({ workspaces, onVaultChanged }: { workspaces?: Works
     }
   }
 
-  // 初始加载 + 跟随工作区：最近激活的工作区目录 → activateVault
+  // 初始加载 + 跟随「当前会话」所属工作区（会话归属 → 会话 cwd → recent 兜底）
   useEffect(() => {
     load()
     if (!workspaces) return
     let disposed = false
-    const applyWorkspace = () => {
+    // 诊断 + 跟随合一：轮询读快照（绕过 subscribe 是否触发的变量），每 2s 重估一次
+    const step = () => {
       try {
-        const snap = workspaces.list.getSnapshot()
-        if (!snap.baselinesReady) return
-        const recent = snap.items.find((w) => w.id === snap.recentWorkspaceId) ?? snap.items[0]
-        const root = recent?.path
-        if (!root || disposed) return
-        if (activatedRootRef.current === root) return
-        activatedRootRef.current = root
-        activateVault(root)
+        const wsSnap = workspaces.list.getSnapshot()
+        let ssSnap: { current?: string; byId?: Record<string, { cwd?: string }>; phase?: string; state?: string } | undefined
+        let ssErr = ''
+        try { ssSnap = sessions?.list.getSnapshot() } catch (e) { ssErr = String(e) }
+        const sessCount = ssSnap?.byId ? Object.keys(ssSnap.byId).length : -1
+        setDiag(`ws#${(wsSnap.items ?? []).length} ${String(wsSnap.state)}/${String(wsSnap.phase)} | ss=${sessions ? 'ok' : 'NO'}${ssErr ? `(err ${ssErr.slice(0, 30)})` : ''} ssP=${String(ssSnap?.phase)}/${String(ssSnap?.state)} cur=${ssSnap?.current ? ssSnap.current.slice(0, 12) : '∅'} sess#${sessCount} ready=${wsSnap.baselinesReady ? 'y' : 'n'} recent=${(wsSnap.recentWorkspaceId ?? '∅').slice(0, 8)}`)
+        if (disposed) return
+        // 门禁放宽：ws 基线 ready 即跟随（不等 sessions.phase=ready——新版其语义/时序存疑）
+        const wsUsable = wsSnap.baselinesReady || wsSnap.phase === 'ready'
+        if (!wsUsable) return
+        // 跟随目标 = 当前选中会话所属的工作区目录（不用 recent：它按会话更新时间投影，可能与浏览中的会话不一致）
+        let targetRoot: string | undefined
+        const currentId = ssSnap?.current
+        if (currentId) {
+          const owning = (wsSnap.items ?? []).find((w) => w.sessionIds?.includes(currentId))
+          if (owning?.path) {
+            targetRoot = owning.path
+          } else {
+            const cwd = ssSnap?.byId?.[currentId]?.cwd
+            if (cwd) targetRoot = cwd
+          }
+        }
+        targetRoot ??= ((wsSnap.items ?? []).find((w) => w.id === wsSnap.recentWorkspaceId) ?? wsSnap.items?.[0])?.path
+        setDiag(prev => `${prev} → target=${targetRoot ? targetRoot.split(/[\\/]/).pop() : '∅'}`)
+        if (!targetRoot || disposed || activatedRootRef.current === targetRoot) return
+        activatedRootRef.current = targetRoot
+        activateVault(targetRoot)
           .then((r) => {
             if (disposed) return
             setCurrent(r.current)
@@ -70,14 +104,16 @@ export function VaultHeader({ workspaces, onVaultChanged }: { workspaces?: Works
             onVaultChanged()
           })
           .catch(() => { /* 服务端不可用：保持当前库 */ })
-      } catch {
-        // host 无 workspaces 服务：仅手动切换
+      } catch (e) {
+        setDiag(`step err: ${String(e).slice(0, 80)}`)
       }
     }
-    applyWorkspace()
-    const unsub = workspaces.list.subscribe(applyWorkspace)
-    return () => { disposed = true; unsub() }
-  }, [workspaces])
+    step()
+    const timer = setInterval(step, 2000)
+    const unsubWs = workspaces.list.subscribe(step)
+    const unsubSs = sessions?.list.subscribe(step)
+    return () => { disposed = true; clearInterval(timer); unsubWs(); unsubSs?.() }
+  }, [workspaces, sessions])
 
   const handleSwitch = async (id: string) => {
     if (!id || id === current?.id) return
@@ -145,6 +181,8 @@ export function VaultHeader({ workspaces, onVaultChanged }: { workspaces?: Works
         {manageOpen ? <IconChevronDown size={14} /> : <IconGear size={14} />}
       </button>
     </div>
+
+    {diag && <div className="knj-diag" style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--knj-text-3, #888)', wordBreak: 'break-all', margin: '2px 0 4px' }}>{diag}</div>}
 
     <select className="knj-select knj-vault__select" value={current?.id ?? ''}
       onChange={(e) => handleSwitch(e.target.value)} disabled={busy} title='切换知识库'>

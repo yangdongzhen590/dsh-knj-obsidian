@@ -1,7 +1,7 @@
 // vault-store.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VaultStore } from './lib/vault-store.js'
@@ -15,7 +15,7 @@ test('ensure 创建 .wiki 结构与 index.md（幂等）', (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   store.ensure()
-  for (const c of ['concepts', 'entities', 'references', 'synthesis', 'projects', '_raw']) {
+  for (const c of ['concepts', 'entities', 'references', 'synthesis', 'projects', '_system']) {
     assert.ok(existsSync(join(dir, '.wiki', c)), `缺少目录 ${c}`)
   }
   assert.ok(existsSync(join(dir, '.wiki', 'index.md')))
@@ -140,4 +140,63 @@ test('readPage 解析 CRLF 行尾的文件（Windows / git autocrlf）', (t) => 
   assert.equal(back.source, 'docs/notes.md')
   assert.match(back.body, /第一行/)
   assert.match(back.body, /第二行/)
+})
+
+test('readPage 解析带 UTF-8 BOM 的笔记（本机有 BOM 事故史，frontmatter 不得失效）', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.ensure()
+  const raw = [
+    '---', 'id: bom-page', 'title: BOM 页', 'category: concepts', 'tags: []',
+    'source: docs/bom.md', 'confidence: extracted', 'created: c', 'updated: u', '---',
+    '', '带 BOM 的正文。',
+  ].join('\n')
+  writeFileSync(join(dir, '.wiki', 'concepts', 'bom-page.md'), '\uFEFF' + raw, 'utf8')
+  const back = store.readPage('bom-page', 'concepts')
+  assert.ok(back, 'BOM 开头的文件必须能解析出页面')
+  assert.equal(back.id, 'bom-page')
+  assert.equal(back.title, 'BOM 页')
+  assert.match(back.body, /带 BOM 的正文/)
+})
+
+test('writePage 阻断 frontmatter 注入：title 含换行的伪造 id/category 行不得改写页面身份', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.ensure()
+  const page = {
+    id: 'honest-page', title: '正常标题\nid: evil-page\ncategory: projects', category: 'concepts',
+    tags: ['a\nid: evil'], source: 'agent:x', confidence: 'extracted',
+    created: 'c', updated: 'u', body: '正文。',
+  }
+  store.writePage(page)
+  const raw = readFileSync(join(dir, '.wiki', 'concepts', 'honest-page.md'), 'utf8')
+  // 威胁是「独立成行的伪造指令」：注入内容被拍平进 title 值后是惰性文本，但不得再自成一行
+  assert.ok(!/^id: evil-page$/m.test(raw), '不得出现独立成行的注入 id 指令')
+  assert.ok(!/^category: projects$/m.test(raw), '不得出现独立成行的注入 category 指令')
+  const back = store.readPage('honest-page', 'concepts')
+  assert.ok(back)
+  assert.equal(back.id, 'honest-page', '页面 id 不得被注入行改写')
+  assert.equal(back.category, 'concepts', '页面 category 不得被注入行改写')
+  assert.equal(back.title, '正常标题 id: evil-page category: projects', '多行 title 拍平为单行')
+})
+
+test('readPage 反映磁盘外部编辑（mtime 失效：缓存不得返回旧内容）', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.ensure()
+  store.writePage({ id: 'cached', title: '旧标题', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '旧正文' })
+  assert.equal(store.readPage('cached', 'concepts').body, '旧正文')
+  assert.equal(store.readPage('cached', 'concepts').body, '旧正文') // 二次读取命中缓存路径
+  const file = join(dir, '.wiki', 'concepts', 'cached.md')
+  const newer = [
+    '---', 'id: cached', 'title: 新标题', 'category: concepts', 'tags: []',
+    'source: s', 'confidence: extracted', 'created: c', 'updated: u2', '---', '', '新正文',
+  ].join('\n')
+  writeFileSync(file, newer, 'utf8')
+  // 显式推进 mtime，避免同刻度写入导致 mtimeMs 相同
+  utimesSync(file, new Date(Date.now() / 1000 + 5), new Date(Date.now() / 1000 + 5))
+  const back = store.readPage('cached', 'concepts')
+  assert.ok(back)
+  assert.equal(back.title, '新标题', '外部编辑后必须读到新内容')
+  assert.equal(back.body, '新正文')
 })

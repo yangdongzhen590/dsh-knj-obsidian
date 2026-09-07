@@ -145,3 +145,11 @@ export const switchVault = (id: string): Promise<VaultsResponse> => postVault('s
 export const attachVault = (root: string, name?: string): Promise<VaultsResponse> => postVault('attach', name?.trim() ? { root, name: name.trim() } : { root })
 
 export const removeVault = (id: string): Promise<VaultsResponse> => postVault('remove', { id })
+
+/** 取单个知识页（非 raw）。 */
+export async function fetchPage(id: string, category: string): Promise<WikiPage> {
+  const res = await fetch(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`)
+  const data = await res.json() as { page?: WikiPage; error?: string }
+  if (!res.ok || data.error || !data.page) throw new Error(data.error ?? `page api: ${res.status}`)
+  return data.page
+}

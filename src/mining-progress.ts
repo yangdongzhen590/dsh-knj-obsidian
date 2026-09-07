@@ -1,6 +1,6 @@
 // src/mining-progress.ts
 // 断点续传：模块级进度（pending/done/partial）。每模块完成后写回，
-// 中断最多丢一个模块。文件落 vault _raw/_tools/progress-<kind>.json。
+// 中断最多丢一个模块。文件落 vault _system/tools/progress-<kind>.json。
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -40,5 +40,5 @@ export function pendingModules(progress: MiningProgress): string[] {
 }
 
 export function progressFileFor(wikiRoot: string, kind: MiningKind): string {
-  return join(wikiRoot, '_raw', '_tools', `progress-${kind}.json`)
+  return join(wikiRoot, '_system', 'tools', `progress-${kind}.json`)
 }

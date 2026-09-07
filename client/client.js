@@ -6,6 +6,7 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react = require("react");
 		let react_jsx_runtime = require("react/jsx-runtime");
+		let react_dom = require("react-dom");
 		//#region src/client/api.ts
 		const BASE = "/api/obsidian-wiki";
 		async function getJson(path) {
@@ -86,6 +87,13 @@ window.__ModuleLoader__.load({
 			name: name.trim()
 		} : { root });
 		const removeVault = (id) => postVault("remove", { id });
+		/** 取单个知识页（非 raw）。 */
+		async function fetchPage(id, category) {
+			const res = await fetch(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`);
+			const data = await res.json();
+			if (!res.ok || data.error || !data.page) throw new Error(data.error ?? `page api: ${res.status}`);
+			return data.page;
+		}
 		//#endregion
 		//#region src/client/icons.tsx
 		function base(size) {
@@ -144,10 +152,25 @@ window.__ModuleLoader__.load({
 			...rest,
 			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13Z" }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" })]
 		});
+		const IconFolder = ({ size = 16, ...rest }) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+			...base(size),
+			...rest,
+			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M4 5a2 2 0 0 1 2-2h4l2 3h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Z" })
+		});
 		const IconFile = ({ size = 16, ...rest }) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("svg", {
 			...base(size),
 			...rest,
 			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z" }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M14 2v5h5" })]
+		});
+		const IconExpand = ({ size = 16, ...rest }) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+			...base(size),
+			...rest,
+			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" })
+		});
+		const IconCompress = ({ size = 16, ...rest }) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+			...base(size),
+			...rest,
+			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5" })
 		});
 		const IconGraph = ({ size = 16, ...rest }) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("svg", {
 			...base(size),
@@ -233,14 +256,26 @@ window.__ModuleLoader__.load({
 		});
 		//#endregion
 		//#region src/client/VaultTree.tsx
+		/** 浏览视图 = 文件浏览器（Obsidian 式）：7 个知识分类目录可层层展开/收起。 */
 		const CATEGORY_LABELS$1 = {
 			concepts: "概念",
 			entities: "实体",
-			references: "参考",
+			dictionaries: "字典",
+			tables: "数据结构",
+			references: "参考资料",
 			synthesis: "综合",
-			projects: "项目"
+			projects: "项目知识"
 		};
-		/** confidence 圆点：extracted 实心强调色 / inferred 空心 / ambiguous 琥珀 */
+		/** 目录展示顺序：与 index.md 的 SECTION_TITLES 一致 */
+		const CATEGORY_ORDER = [
+			"concepts",
+			"entities",
+			"dictionaries",
+			"tables",
+			"references",
+			"synthesis",
+			"projects"
+		];
 		const CONFIDENCE_DOT = {
 			extracted: "knj-dot--ok",
 			inferred: "knj-dot--muted",
@@ -250,10 +285,12 @@ window.__ModuleLoader__.load({
 			const [pages, setPages] = (0, react.useState)([]);
 			const [error, setError] = (0, react.useState)(null);
 			const [loaded, setLoaded] = (0, react.useState)(false);
+			const [expanded, setExpanded] = (0, react.useState)(null);
 			(0, react.useEffect)(() => {
 				const load = () => fetchPages().then((r) => {
 					setPages(r.pages);
 					setLoaded(true);
+					setExpanded((prev) => prev ?? initialExpanded(r.pages));
 				}).catch((e) => {
 					setError(String(e));
 					setLoaded(true);
@@ -262,6 +299,12 @@ window.__ModuleLoader__.load({
 				window.addEventListener("wiki:pages-changed", load);
 				return () => window.removeEventListener("wiki:pages-changed", load);
 			}, []);
+			const toggle = (cat) => {
+				setExpanded((prev) => ({
+					...prev ?? {},
+					[cat]: !(prev?.[cat] ?? false)
+				}));
+			};
 			if (error) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "knj-error",
 				children: [
@@ -294,25 +337,41 @@ window.__ModuleLoader__.load({
 				list.push(p);
 				groups.set(p.category, list);
 			}
+			for (const list of groups.values()) list.sort((a, b) => a.title.localeCompare(b.title, "zh-CN"));
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "knj-tree",
-				children: [[...groups.entries()].map(([cat, list]) => {
-					return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "knj-tree__group",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "knj-tree__head",
-							children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									className: "knj-tree__group-icon",
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 13 })
-								}),
-								CATEGORY_LABELS$1[cat] ?? cat,
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									className: "knj-tree__count",
-									children: list.length
-								})
-							]
-						}), list.map((p) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				children: [CATEGORY_ORDER.map((cat) => {
+					const list = groups.get(cat);
+					const count = list?.length ?? 0;
+					const open = expanded?.[cat] ?? count > 0;
+					return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: `knj-tree__dir${open ? " knj-tree__dir--open" : ""}`,
+						onClick: () => toggle(cat),
+						title: count > 0 ? `展开/收起 ${CATEGORY_LABELS$1[cat] ?? cat}` : `${CATEGORY_LABELS$1[cat] ?? cat}（暂无页面）`,
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "knj-tree__chev",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronRight, { size: 13 })
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: `knj-tree__dir-icon knj-tree__dir-icon--${cat}`,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconFolder, { size: 14 })
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "knj-tree__dir-name",
+								children: CATEGORY_LABELS$1[cat] ?? cat
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "knj-tree__count",
+								children: count
+							})
+						]
+					}), open && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "knj-tree__children",
+						children: count === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "knj-tree__empty",
+							children: "（暂无页面）"
+						}) : list.map((p) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: "knj-tree__item",
 							onClick: () => onOpen(p),
 							title: p.title,
@@ -330,13 +389,19 @@ window.__ModuleLoader__.load({
 									title: `confidence: ${p.confidence}`
 								})
 							]
-						}, p.id))]
-					}, cat);
+						}, p.id))
+					})] }, cat);
 				}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 					className: "knj-tree__hint",
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronRight, { size: 12 }), "点击笔记在右侧工作台打开"]
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronRight, { size: 12 }), "点击目录展开/收起 · 点击页在右侧打开"]
 				})]
 			});
+		}
+		function initialExpanded(pages) {
+			const nonEmpty = new Set(pages.map((p) => p.category));
+			const out = {};
+			for (const cat of CATEGORY_ORDER) out[cat] = nonEmpty.has(cat);
+			return out;
 		}
 		//#endregion
 		//#region src/client/SearchBox.tsx
@@ -680,544 +745,6 @@ window.__ModuleLoader__.load({
 					]
 				})
 			] });
-		}
-		//#endregion
-		//#region src/client/GraphView.tsx
-		/**
-		* 图谱视图（设计 v2）：力导向布局渲染进 <svg>。
-		* - 节点按 category 着色（CSS 类 → 宿主令牌，浅/深主题自适应），孤儿灰色，断链红色虚线
-		* - 顶部统计 + 图例 chips；点击节点回调 onOpenNote 打开笔记
-		* - 安全：用户可控字段（id/title/category）进入 innerHTML 前一律经 esc() 转义
-		*/
-		const ESC_MAP = {
-			"<": "&lt;",
-			">": "&gt;",
-			"&": "&amp;",
-			"\"": "&quot;"
-		};
-		function esc(s) {
-			return s.replace(/[<>&"]/g, (c) => ESC_MAP[c] ?? c);
-		}
-		/** category → 节点 CSS 类（颜色由 styles.ts 令牌驱动） */
-		const CATEGORY_CLASS = {
-			concepts: "knj-graph-node--concepts",
-			entities: "knj-graph-node--entities",
-			references: "knj-graph-node--references",
-			synthesis: "knj-graph-node--synthesis",
-			projects: "knj-graph-node--projects",
-			dictionaries: "knj-graph-node--dictionaries",
-			tables: "knj-graph-node--tables"
-		};
-		const CATEGORY_LABELS = {
-			concepts: "概念",
-			entities: "实体",
-			references: "参考",
-			synthesis: "综合",
-			projects: "项目",
-			dictionaries: "字典",
-			tables: "数据结构"
-		};
-		function GraphView({ onOpenNote }) {
-			const [graph, setGraph] = (0, react.useState)(null);
-			const [error, setError] = (0, react.useState)(null);
-			const svgRef = (0, react.useRef)(null);
-			(0, react.useEffect)(() => {
-				let cancelled = false;
-				fetch("/api/obsidian-wiki/graph").then((r) => r.json()).then((d) => {
-					if (!cancelled) setGraph(d);
-				}).catch((e) => {
-					if (!cancelled) setError(String(e));
-				});
-				return () => {
-					cancelled = true;
-				};
-			}, []);
-			(0, react.useEffect)(() => {
-				if (!graph || !svgRef.current) return;
-				const svg = svgRef.current;
-				const W = 600, H = 400;
-				const nodes = graph.nodes.map((n, i) => ({
-					...n,
-					x: W / 2 + Math.cos(i * 2.4) * 140,
-					y: H / 2 + Math.sin(i * 2.4) * 140,
-					vx: 0,
-					vy: 0
-				}));
-				const byId = new Map(nodes.map((n) => [n.id, n]));
-				const edges = graph.edges.filter((e) => byId.has(e.source) && byId.has(e.target)).map((e) => ({
-					...e,
-					a: byId.get(e.source),
-					b: byId.get(e.target)
-				}));
-				const orphans = new Set(graph.orphanIds);
-				let frame = 0;
-				let raf = 0;
-				const DEG = .85, REP = 1200, SPRING = .04, TARGET = 120;
-				const tick = () => {
-					for (const a of nodes) {
-						a.vx *= DEG;
-						a.vy *= DEG;
-						for (const b of nodes) {
-							if (a === b) continue;
-							const dx = a.x - b.x, dy = a.y - b.y;
-							const d2 = dx * dx + dy * dy + .01;
-							const d = Math.sqrt(d2);
-							const f = REP / d2;
-							a.vx += dx / d * f;
-							a.vy += dy / d * f;
-						}
-					}
-					for (const e of edges) {
-						const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y;
-						const d = Math.sqrt(dx * dx + dy * dy) || 1;
-						const f = (d - TARGET) * SPRING;
-						e.a.vx += dx / d * f;
-						e.a.vy += dy / d * f;
-						e.b.vx -= dx / d * f;
-						e.b.vy -= dy / d * f;
-					}
-					for (const n of nodes) {
-						n.x += n.vx;
-						n.y += n.vy;
-						n.x = Math.max(20, Math.min(580, n.x));
-						n.y = Math.max(20, Math.min(380, n.y));
-					}
-					paint();
-					frame++;
-					if (frame < 200) raf = requestAnimationFrame(tick);
-				};
-				const paint = () => {
-					let out = "";
-					for (const e of edges) out += `<line x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}" class="knj-graph-edge${e.broken ? " knj-graph-edge--broken" : ""}" stroke-width="1.5"/>`;
-					for (const n of nodes) {
-						const cls = orphans.has(n.id) ? "knj-graph-node--orphan" : CATEGORY_CLASS[n.category] ?? "knj-graph-node--muted";
-						out += `<g data-id="${esc(n.id)}" data-category="${esc(n.category)}" data-title="${esc(n.title)}" style="cursor:pointer">`;
-						out += `<circle cx="${n.x}" cy="${n.y}" r="8" class="knj-graph-node ${cls}"/>`;
-						out += `<text x="${n.x + 12}" y="${n.y + 4}" class="knj-graph-label">${esc(n.title)}</text>`;
-						out += `</g>`;
-					}
-					svg.innerHTML = out;
-				};
-				const onClick = (ev) => {
-					const el = ev.target.closest("g[data-id]");
-					if (!el) return;
-					onOpenNote(el.dataset.id, el.dataset.category, el.dataset.title);
-				};
-				svg.addEventListener("click", onClick);
-				raf = requestAnimationFrame(tick);
-				return () => {
-					cancelAnimationFrame(raf);
-					svg.removeEventListener("click", onClick);
-				};
-			}, [graph, onOpenNote]);
-			if (error) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-error",
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconRefresh, { size: 14 }),
-					"图谱加载失败：",
-					error
-				]
-			});
-			if (!graph) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-loading",
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-					className: "knj-spinner",
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconRefresh, { size: 14 })
-				}), "图谱加载中…"]
-			});
-			if (graph.nodes.length < 2) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-empty",
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "knj-empty__icon",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGraph, { size: 30 })
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [
-						"图谱还太小（",
-						graph.nodes.length,
-						" 节点）"
-					] }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "先吸收几份文档，图谱就会长出来。" })
-				]
-			});
-			const legendKeys = [...new Set(graph.nodes.map((n) => n.category))];
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-vcol",
-				style: { padding: "4px 12px 12px" },
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "knj-graph-head",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-								className: "knj-graph-stats",
-								children: [
-									graph.nodes.length,
-									" 节点 · ",
-									graph.edges.length,
-									" 边"
-								]
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-								className: "knj-pop__hint",
-								children: "点击节点打开笔记"
-							})
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "knj-graph-legend",
-						children: [legendKeys.map((cat) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: `knj-chip knj-chip--${cat}`,
-							children: CATEGORY_LABELS[cat] ?? cat
-						}, cat)), graph.orphanIds.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-							className: "knj-chip knj-chip--neutral",
-							children: ["孤儿 ", graph.orphanIds.length]
-						})]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-						ref: svgRef,
-						width: 600,
-						height: 400,
-						viewBox: "0 0 600 400",
-						className: "knj-graph-svg"
-					})
-				]
-			});
-		}
-		//#endregion
-		//#region src/client/VaultHeader.tsx
-		/**
-		* v7 vault 头部（设计 v2）：当前库身份（名称+路径）、切换下拉、新建/挂接/移除。
-		* - 挂载时按当前工作区激活库（跟随工作区走；无 workspaces 服务时降级为手动切换）
-		* - 切换/变更后回调 onVaultChanged，由上层刷新树/lint/图谱
-		* 样式全部走宿主令牌（styles.ts），随宿主浅/深主题自适应。
-		*/
-		const SOURCE_LABEL = {
-			cwd: "默认",
-			workspace: "工作区",
-			attached: "挂接"
-		};
-		function VaultHeader({ workspaces, onVaultChanged }) {
-			const [current, setCurrent] = (0, react.useState)(null);
-			const [vaults, setVaults] = (0, react.useState)([]);
-			const [notice, setNotice] = (0, react.useState)(null);
-			const [manageOpen, setManageOpen] = (0, react.useState)(false);
-			const [formPath, setFormPath] = (0, react.useState)("");
-			const [formName, setFormName] = (0, react.useState)("");
-			const [busy, setBusy] = (0, react.useState)(false);
-			const activatedRootRef = (0, react.useRef)(null);
-			const flash = (text, kind = "ok") => {
-				setNotice({
-					text,
-					kind
-				});
-				setTimeout(() => setNotice(null), 5e3);
-			};
-			const load = async () => {
-				try {
-					const r = await fetchVaults();
-					setCurrent(r.current);
-					setVaults(r.vaults);
-				} catch (e) {
-					flash(`库列表加载失败：${e instanceof Error ? e.message : String(e)}`, "err");
-				}
-			};
-			(0, react.useEffect)(() => {
-				load();
-				if (!workspaces) return;
-				let disposed = false;
-				const applyWorkspace = () => {
-					try {
-						const snap = workspaces.list.getSnapshot();
-						if (!snap.baselinesReady) return;
-						const root = (snap.items.find((w) => w.id === snap.recentWorkspaceId) ?? snap.items[0])?.path;
-						if (!root || disposed) return;
-						if (activatedRootRef.current === root) return;
-						activatedRootRef.current = root;
-						activateVault(root).then((r) => {
-							if (disposed) return;
-							setCurrent(r.current);
-							setVaults(r.vaults);
-							onVaultChanged();
-						}).catch(() => {});
-					} catch {}
-				};
-				applyWorkspace();
-				const unsub = workspaces.list.subscribe(applyWorkspace);
-				return () => {
-					disposed = true;
-					unsub();
-				};
-			}, [workspaces]);
-			const handleSwitch = async (id) => {
-				if (!id || id === current?.id) return;
-				setBusy(true);
-				try {
-					const r = await switchVault(id);
-					setCurrent(r.current);
-					setVaults(r.vaults);
-					onVaultChanged();
-				} catch (e) {
-					flash(`切换失败：${e instanceof Error ? e.message : String(e)}`, "err");
-				} finally {
-					setBusy(false);
-				}
-			};
-			const doAttach = async () => {
-				const root = formPath.trim();
-				if (!root) {
-					flash("请填写库目录（绝对路径）", "err");
-					return;
-				}
-				setBusy(true);
-				try {
-					const r = await attachVault(root, formName.trim() || void 0);
-					setCurrent(r.current);
-					setVaults(r.vaults);
-					setManageOpen(false);
-					setFormPath("");
-					setFormName("");
-					flash(`已挂接/新建：${r.current?.name ?? root}`);
-					onVaultChanged();
-				} catch (e) {
-					flash(`挂接失败：${e instanceof Error ? e.message : String(e)}`, "err");
-				} finally {
-					setBusy(false);
-				}
-			};
-			const doRemove = async () => {
-				if (!current || current.source !== "attached") return;
-				if (!window.confirm(`从列表中移除知识库「${current.name}」？\n不会删除磁盘上的任何文件。`)) return;
-				setBusy(true);
-				try {
-					const r = await removeVault(current.id);
-					setCurrent(r.current);
-					setVaults(r.vaults);
-					flash(`已移除「${current.name}」`);
-					onVaultChanged();
-				} catch (e) {
-					flash(`移除失败：${e instanceof Error ? e.message : String(e)}`, "err");
-				} finally {
-					setBusy(false);
-				}
-			};
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-vault",
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "knj-vault__identity",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-								className: "knj-vault__name",
-								title: current?.name,
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 15 }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									className: "knj-vault__name-text",
-									children: current ? current.name : "知识库"
-								})]
-							}),
-							current && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-								className: "knj-vault__path",
-								title: current.root,
-								children: current.root
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
-							current?.source === "attached" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "knj-icon-btn knj-icon-btn--danger",
-								title: "从列表移除（不删文件）",
-								onClick: doRemove,
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconTrash, { size: 14 })
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "knj-icon-btn",
-								title: "新建 / 挂接 / 移除知识库",
-								onClick: () => setManageOpen(!manageOpen),
-								children: manageOpen ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronDown, { size: 14 }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGear, { size: 14 })
-							})
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-						className: "knj-select knj-vault__select",
-						value: current?.id ?? "",
-						onChange: (e) => handleSwitch(e.target.value),
-						disabled: busy,
-						title: "切换知识库",
-						children: [vaults.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-							value: "",
-							children: "（无知识库）"
-						}), vaults.map((v) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("option", {
-							value: v.id,
-							children: [
-								v.name,
-								" · ",
-								v.pageCount,
-								" 页 · ",
-								SOURCE_LABEL[v.source] ?? v.source
-							]
-						}, v.id))]
-					}),
-					notice && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: `knj-banner ${notice.kind === "ok" ? "knj-banner--ok" : "knj-banner--err"}`,
-						style: { marginTop: 8 },
-						children: notice.text
-					}),
-					manageOpen && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "knj-vault__manage",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "knj-vault__manage-row",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-								className: "knj-input",
-								value: formPath,
-								onChange: (e) => setFormPath(e.target.value),
-								placeholder: "库目录（绝对路径）",
-								spellCheck: false
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "knj-btn",
-								onClick: () => workspaces?.pickDirectory?.().then((p) => p && setFormPath(p)).catch(() => {}),
-								children: "选目录"
-							})]
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "knj-vault__manage-row",
-							children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-									className: "knj-input",
-									value: formName,
-									onChange: (e) => setFormName(e.target.value),
-									placeholder: "显示名（可留空）"
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-									type: "button",
-									className: "knj-btn knj-btn--primary",
-									disabled: busy || !formPath.trim(),
-									onClick: doAttach,
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconPlus, { size: 14 }), busy ? "处理中…" : "新建/挂接"]
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									className: "knj-btn",
-									onClick: () => setManageOpen(false),
-									children: "取消"
-								})
-							]
-						})]
-					})
-				]
-			});
-		}
-		//#endregion
-		//#region src/client/WikiSidebar.tsx
-		/**
-		* 知识库边栏标签（设计 v2）：
-		* - 顶部：vault 头部（当前库身份 + 切换 + 新建/挂接/移除，v7）
-		* - 搜索（图标输入框 + 加载态）
-		* - 浏览/图谱分段切换；内容区随搜索结果 / 树 / 图谱切换
-		* - 底部状态条（LintPanel）：页数 + 健康度；「问题」「工具」面板展开
-		*/
-		function WikiSidebar({ openNote, workspaces }) {
-			const [results, setResults] = (0, react.useState)(null);
-			const [view, setView] = (0, react.useState)("browse");
-			const [vaultVersion, setVaultVersion] = (0, react.useState)(0);
-			/** v7：库切换后清掉旧库的搜索结果、刷新树/lint、重挂载图谱。 */
-			const handleVaultChanged = () => {
-				setResults(null);
-				setVaultVersion((v) => v + 1);
-				window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
-			};
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "knj-wiki knj-vcol",
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultHeader, {
-						workspaces,
-						onVaultChanged: handleVaultChanged
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SearchBox, { onResult: setResults }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						style: { padding: "8px 12px 4px" },
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "knj-seg",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-								type: "button",
-								className: `knj-seg__item${view === "browse" ? " knj-seg__item--active" : ""}`,
-								onClick: () => setView("browse"),
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 13 }), "浏览"]
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-								type: "button",
-								className: `knj-seg__item${view === "graph" ? " knj-seg__item--active" : ""}`,
-								onClick: () => setView("graph"),
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGraph, { size: 13 }), "图谱"]
-							})]
-						})
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "knj-grow knj-scroll",
-						children: view === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GraphView, { onOpenNote: openNote }) }, vaultVersion) : results !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "knj-vcol",
-							children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "knj-result-head",
-									children: [
-										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-											className: "knj-result-title",
-											children: [
-												"搜索结果（",
-												results.length,
-												"）"
-											]
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-											type: "button",
-											className: "knj-icon-btn",
-											title: "返回浏览",
-											onClick: () => setResults(null),
-											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconClose, { size: 14 })
-										})
-									]
-								}),
-								results.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "knj-empty",
-									children: [
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "knj-empty__icon",
-											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 26 })
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "没有匹配的笔记" }),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "换个关键词试试，或对 agent 说「把 XX 吸收进 wiki」。" })
-									]
-								}),
-								results.map((c) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "knj-result-item",
-									onClick: () => openNote(c.id, c.category, c.title),
-									children: [
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-											style: {
-												fontSize: 13,
-												fontWeight: 500,
-												color: "var(--knj-text)"
-											},
-											children: c.title
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-											className: "knj-result-item__meta",
-											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-												className: `knj-chip knj-chip--${c.category}`,
-												children: c.category
-											}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: c.confidence })]
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-											className: "knj-result-item__snippet",
-											children: c.snippet
-										})
-									]
-								}, c.id))
-							]
-						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultTree, { onOpen: (p) => openNote(p.id, p.category, p.title) })
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LintPanel, { openNote })
-				]
-			});
 		}
 		//#endregion
 		//#region node_modules/marked/lib/marked.esm.js
@@ -5496,6 +5023,894 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			}).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\*([^*]+)\*/g, "<em>$1</em>").replace(/~~([^~]+)~~/g, "<del>$1</del>");
 		}
 		//#endregion
+		//#region src/client/GraphView.tsx
+		/**
+		* 图谱视图（v10 页签式全屏）：
+		* - 嵌入态：自适应画布 + 全屏按钮；点节点 → 直接开笔记工作台
+		* - 全屏态（Portal 到 body）：顶部页签栏 —— 「图谱」页签 + 点击节点打开的页面页签
+		* - 节点命中用 pointerup（布局动画逐帧重写 svg 子元素会让 click 丢失，表现为要点两次）
+		*/
+		const ESC_MAP = {
+			"<": "&lt;",
+			">": "&gt;",
+			"&": "&amp;",
+			"\"": "&quot;"
+		};
+		function esc(s) {
+			return s.replace(/[<>&"]/g, (c) => ESC_MAP[c] ?? c);
+		}
+		const CATEGORY_CLASS = {
+			concepts: "knj-graph-node--concepts",
+			entities: "knj-graph-node--entities",
+			references: "knj-graph-node--references",
+			synthesis: "knj-graph-node--synthesis",
+			projects: "knj-graph-node--projects",
+			dictionaries: "knj-graph-node--dictionaries",
+			tables: "knj-graph-node--tables"
+		};
+		const CATEGORY_LABELS = {
+			concepts: "概念",
+			entities: "实体",
+			references: "参考",
+			synthesis: "综合",
+			projects: "项目",
+			dictionaries: "字典",
+			tables: "数据结构"
+		};
+		function layoutParams(n) {
+			if (n > 1200) return {
+				frameLimit: 60,
+				spring: .02
+			};
+			if (n > 500) return {
+				frameLimit: 90,
+				spring: .03
+			};
+			if (n > 150) return {
+				frameLimit: 140,
+				spring: .04
+			};
+			return {
+				frameLimit: 200,
+				spring: .04
+			};
+		}
+		function GraphView({ onOpenNote }) {
+			const [graph, setGraph] = (0, react.useState)(null);
+			const [error, setError] = (0, react.useState)(null);
+			const [fullscreen, setFullscreen] = (0, react.useState)(false);
+			const [tabs, setTabs] = (0, react.useState)([{
+				key: "graph",
+				kind: "graph"
+			}]);
+			const [activeKey, setActiveKey] = (0, react.useState)("graph");
+			const [size, setSize] = (0, react.useState)({
+				w: 520,
+				h: 320
+			});
+			const svgRef = (0, react.useRef)(null);
+			const wrapRef = (0, react.useRef)(null);
+			const [idIndex, setIdIndex] = (0, react.useState)(null);
+			const active = activeKey === "graph";
+			const [seq, setSeq] = (0, react.useState)(0);
+			(0, react.useEffect)(() => {
+				let cancelled = false;
+				fetch("/api/obsidian-wiki/graph").then((r) => r.json()).then((d) => {
+					if (!cancelled) setGraph(d);
+				}).catch((e) => {
+					if (!cancelled) setError(String(e));
+				});
+				fetchPages().then(({ pages }) => {
+					if (cancelled) return;
+					const m = /* @__PURE__ */ new Map();
+					for (const p of pages) m.set(p.id, {
+						category: p.category,
+						title: p.title
+					});
+					setIdIndex(m);
+				}).catch(() => {});
+				return () => {
+					cancelled = true;
+				};
+			}, []);
+			(0, react.useEffect)(() => {
+				const measure = () => {
+					const el = wrapRef.current;
+					if (!el || !active) return;
+					if (fullscreen) setSize({
+						w: Math.max(320, el.clientWidth || 320),
+						h: Math.max(200, el.clientHeight || 300)
+					});
+					else setSize({
+						w: Math.max(320, el.clientWidth || 320),
+						h: Math.max(200, (el.clientHeight || 300) - 86)
+					});
+				};
+				measure();
+				const ro = new ResizeObserver(() => measure());
+				if (wrapRef.current) ro.observe(wrapRef.current);
+				const onKey = (ev) => {
+					if (ev.key === "Escape") setFullscreen(false);
+				};
+				window.addEventListener("keydown", onKey);
+				return () => {
+					ro.disconnect();
+					window.removeEventListener("keydown", onKey);
+				};
+			}, [
+				fullscreen,
+				active,
+				seq
+			]);
+			(0, react.useEffect)(() => {
+				if (!graph || !svgRef.current || !active) return;
+				const svg = svgRef.current;
+				const W = size.w, H = size.h;
+				const nodes = graph.nodes.map((n, i) => ({
+					...n,
+					x: W / 2 + Math.cos(i * 2.4) * Math.min(120, Math.max(60, W / 5)),
+					y: H / 2 + Math.sin(i * 2.4) * Math.min(100, Math.max(50, H / 5)),
+					vx: 0,
+					vy: 0
+				}));
+				const byId = new Map(nodes.map((n) => [n.id, n]));
+				const edges = graph.edges.filter((e) => byId.has(e.source) && byId.has(e.target)).map((e) => ({
+					...e,
+					a: byId.get(e.source),
+					b: byId.get(e.target)
+				}));
+				const orphans = new Set(graph.orphanIds);
+				const { frameLimit, spring } = layoutParams(nodes.length);
+				let frame = 0, raf = 0;
+				const DEG = .85, REP = 1200, TARGET = 120;
+				const tick = () => {
+					for (const a of nodes) {
+						a.vx *= DEG;
+						a.vy *= DEG;
+						for (const b of nodes) {
+							if (a === b) continue;
+							const dx = a.x - b.x, dy = a.y - b.y;
+							const d2 = dx * dx + dy * dy + .01;
+							const d = Math.sqrt(d2);
+							const f = REP / d2;
+							a.vx += dx / d * f;
+							a.vy += dy / d * f;
+						}
+					}
+					for (const e of edges) {
+						const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y;
+						const d = Math.sqrt(dx * dx + dy * dy) || 1;
+						const f = (d - TARGET) * spring;
+						e.a.vx += dx / d * f;
+						e.a.vy += dy / d * f;
+						e.b.vx -= dx / d * f;
+						e.b.vy -= dy / d * f;
+					}
+					for (const n of nodes) {
+						n.x += n.vx;
+						n.y += n.vy;
+						n.x = Math.max(24, Math.min(W - 24, n.x));
+						n.y = Math.max(24, Math.min(H - 24, n.y));
+					}
+					paint();
+					frame++;
+					if (frame < frameLimit) raf = requestAnimationFrame(tick);
+				};
+				const paint = () => {
+					let out = "";
+					for (const e of edges) out += `<line x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}" class="knj-graph-edge${e.broken ? " knj-graph-edge--broken" : ""}" stroke-width="1.5"/>`;
+					for (const n of nodes) {
+						const cls = orphans.has(n.id) ? "knj-graph-node--orphan" : CATEGORY_CLASS[n.category] ?? "knj-graph-node--muted";
+						out += `<g data-id="${esc(n.id)}" data-category="${esc(n.category)}" data-title="${esc(n.title)}" style="cursor:pointer">`;
+						out += `<circle cx="${n.x}" cy="${n.y}" r="8" class="knj-graph-node ${cls}"/>`;
+						out += `<text x="${n.x + 12}" y="${n.y + 4}" class="knj-graph-label">${esc(n.title)}</text>`;
+						out += `</g>`;
+					}
+					svg.innerHTML = out;
+				};
+				raf = requestAnimationFrame(tick);
+				return () => {
+					cancelAnimationFrame(raf);
+				};
+			}, [
+				graph,
+				size,
+				active,
+				seq
+			]);
+			const handleNodePointerUp = (ev) => {
+				const el = ev.target?.closest("g[data-id]");
+				if (!el) return;
+				const p = {
+					id: el.dataset.id,
+					category: el.dataset.category,
+					title: el.dataset.title
+				};
+				if (fullscreen) {
+					const key = `p:${p.category}/${p.id}`;
+					setTabs((prev) => prev.some((t) => t.key === key) ? prev : [...prev, {
+						key,
+						kind: "page",
+						ref: p
+					}]);
+					setActiveKey(key);
+				} else onOpenNote(p.id, p.category, p.title);
+			};
+			const openPageTab = (p) => {
+				const key = `p:${p.category}/${p.id}`;
+				setTabs((prev) => prev.some((t) => t.key === key) ? prev : [...prev, {
+					key,
+					kind: "page",
+					ref: p
+				}]);
+				setActiveKey(key);
+			};
+			const closeTab = (key) => {
+				setTabs((prev) => {
+					const next = prev.filter((t) => t.key !== key);
+					if (next.length === 0) return [{
+						key: "graph",
+						kind: "graph"
+					}];
+					if (activeKey === key) setActiveKey("graph");
+					return next;
+				});
+				setSeq((s) => s + 1);
+			};
+			if (error) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-error",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconRefresh, { size: 14 }),
+					"图谱加载失败：",
+					error
+				]
+			});
+			if (!graph) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-loading",
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+					className: "knj-spinner",
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconRefresh, { size: 14 })
+				}), "图谱加载中…"]
+			});
+			if (graph.nodes.length < 2) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-empty",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "knj-empty__icon",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGraph, { size: 30 })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [
+						"图谱还太小（",
+						graph.nodes.length,
+						" 节点）"
+					] }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "先吸收几份文档，图谱就会长出来。" })
+				]
+			});
+			const legendKeys = [...new Set(graph.nodes.map((n) => n.category))];
+			const legend = /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-graph-legend",
+				children: [legendKeys.map((cat) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+					className: `knj-chip knj-chip--${cat}`,
+					children: CATEGORY_LABELS[cat] ?? cat
+				}, cat)), graph.orphanIds.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+					className: "knj-chip knj-chip--neutral",
+					children: ["孤儿 ", graph.orphanIds.length]
+				})]
+			});
+			const stats = /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+				className: "knj-graph-stats",
+				children: [
+					graph.nodes.length,
+					" 节点 · ",
+					graph.edges.length,
+					" 边"
+				]
+			});
+			return fullscreen ? (0, react_dom.createPortal)(/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: "knj-wiki",
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					className: "knj-graph-fs",
+					onClick: (e) => {
+						if (e.target === e.currentTarget) setFullscreen(false);
+					},
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-vcol",
+						style: {
+							height: "100%",
+							padding: 12,
+							gap: 8
+						},
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "knj-fsbar",
+								children: [
+									stats,
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-fsbar__sep" }),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "knj-fstabs",
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+											className: `knj-fstab${activeKey === "graph" ? " knj-fstab--active" : ""}`,
+											onClick: () => {
+												setActiveKey("graph");
+												setSeq((s) => s + 1);
+											},
+											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGraph, { size: 13 }), "图谱"]
+										}), tabs.filter((t) => t.kind === "page").map((t) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+											className: `knj-fstab${activeKey === t.key ? " knj-fstab--active" : ""}`,
+											onClick: () => setActiveKey(t.key),
+											title: t.key,
+											children: [t.ref.title, /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+												type: "button",
+												className: "knj-fstab__close",
+												title: "关闭",
+												onClick: (e) => {
+													e.stopPropagation();
+													closeTab(t.key);
+												},
+												children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconClose, { size: 11 })
+											})]
+										}, t.key))]
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+										type: "button",
+										className: "knj-icon-btn",
+										title: "退出全屏 (Esc)",
+										onClick: () => {
+											setFullscreen(false);
+											setActiveKey("graph");
+										},
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconCompress, { size: 14 })
+									})
+								]
+							}),
+							legend,
+							activeKey === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								ref: wrapRef,
+								className: "knj-fscanvas",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+									ref: svgRef,
+									onPointerUp: handleNodePointerUp,
+									viewBox: `0 0 ${size.w} ${size.h}`,
+									className: "knj-graph-svg",
+									preserveAspectRatio: "xMidYMid meet",
+									style: {
+										width: "100%",
+										height: "100%"
+									}
+								})
+							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "knj-fspage",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PageTabView, {
+									refPage: tabs.find((t) => t.key === activeKey && t.kind === "page"),
+									idIndex,
+									onOpenRef: (p) => openPageTab(p),
+									onOpenFull: () => {
+										const tab = tabs.find((t) => t.key === activeKey && t.kind === "page");
+										if (tab) {
+											setFullscreen(false);
+											setActiveKey("graph");
+											onOpenNote(tab.ref.id, tab.ref.category, tab.ref.title);
+										}
+									}
+								})
+							})
+						]
+					})
+				})
+			}), document.body) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-vcol knj-graph-embed",
+				style: { padding: "4px 12px 12px" },
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-graph-head",
+						children: [
+							stats,
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "knj-pop__hint",
+								children: "点击节点打开笔记"
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "knj-icon-btn",
+								title: "全屏图谱",
+								onClick: () => setFullscreen(true),
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconExpand, { size: 14 })
+							})
+						]
+					}),
+					legend,
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						ref: wrapRef,
+						className: "knj-fscanvas",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+							ref: svgRef,
+							onPointerUp: handleNodePointerUp,
+							viewBox: `0 0 ${size.w} ${size.h}`,
+							className: "knj-graph-svg",
+							preserveAspectRatio: "xMidYMid meet",
+							style: {
+								width: "100%",
+								height: size.h
+							}
+						})
+					})
+				]
+			});
+		}
+		/** 页签内容：读页渲染；页内 wikilink 打开/激活对应页签。 */
+		function PageTabView({ refPage, idIndex, onOpenRef, onOpenFull }) {
+			const [state, setState] = (0, react.useState)({
+				loading: true,
+				html: null,
+				err: null
+			});
+			(0, react.useEffect)(() => {
+				let cancelled = false;
+				if (!refPage) {
+					setState({
+						loading: false,
+						html: null,
+						err: null
+					});
+					return;
+				}
+				setState({
+					loading: true,
+					html: null,
+					err: null
+				});
+				const { ref } = refPage;
+				fetchPage(ref.id, ref.category).then((page) => {
+					if (!cancelled) setState({
+						loading: false,
+						html: renderMarkdown(page.body),
+						err: null
+					});
+				}).catch((e) => {
+					if (!cancelled) setState({
+						loading: false,
+						html: null,
+						err: String(e)
+					});
+				});
+				return () => {
+					cancelled = true;
+				};
+			}, [refPage?.ref.id, refPage?.ref.category]);
+			const onContentClick = (ev) => {
+				const a = ev.target?.closest?.("a[data-wikilink]");
+				if (!a) return;
+				ev.preventDefault();
+				ev.stopPropagation();
+				const id = a.dataset.wikilink ?? "";
+				const hit = idIndex?.get(id);
+				if (hit) onOpenRef({
+					id,
+					category: hit.category,
+					title: hit.title
+				});
+			};
+			const page = refPage?.ref;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-fspage__inner",
+				onClick: onContentClick,
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "knj-fspage__bar",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "knj-fspage__title",
+							title: page?.id,
+							children: page?.title
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "knj-pop__hint",
+							children: page ? `${page.category}/${page.id}` : ""
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: "knj-icon-btn",
+							title: "在笔记工作台完整打开",
+							onClick: onOpenFull,
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconExpand, { size: 13 })
+						})
+					]
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					className: "knj-fspage__body",
+					children: state.loading ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-loading",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "knj-spinner",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconRefresh, { size: 14 })
+						}), "加载中…"]
+					}) : state.err ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-error",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconRefresh, { size: 14 }), state.err]
+					}) : state.html ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "wiki-md-content",
+						dangerouslySetInnerHTML: { __html: state.html }
+					}) : null
+				})]
+			});
+		}
+		//#endregion
+		//#region src/client/VaultHeader.tsx
+		/**
+		* v7 vault 头部（设计 v2）：当前库身份（名称+路径）、切换下拉、新建/挂接/移除。
+		* - 挂载时按当前工作区激活库（跟随工作区走；无 workspaces 服务时降级为手动切换）
+		* - 切换/变更后回调 onVaultChanged，由上层刷新树/lint/图谱
+		* 样式全部走宿主令牌（styles.ts），随宿主浅/深主题自适应。
+		*/
+		const SOURCE_LABEL = {
+			cwd: "默认",
+			workspace: "工作区",
+			attached: "挂接"
+		};
+		function VaultHeader({ workspaces, sessions, onVaultChanged }) {
+			const [current, setCurrent] = (0, react.useState)(null);
+			const [vaults, setVaults] = (0, react.useState)([]);
+			const [notice, setNotice] = (0, react.useState)(null);
+			const [manageOpen, setManageOpen] = (0, react.useState)(false);
+			const [formPath, setFormPath] = (0, react.useState)("");
+			const [formName, setFormName] = (0, react.useState)("");
+			const [busy, setBusy] = (0, react.useState)(false);
+			const activatedRootRef = (0, react.useRef)(null);
+			const [diag, setDiag] = (0, react.useState)("");
+			const flash = (text, kind = "ok") => {
+				setNotice({
+					text,
+					kind
+				});
+				setTimeout(() => setNotice(null), 5e3);
+			};
+			const load = async () => {
+				try {
+					const r = await fetchVaults();
+					setCurrent(r.current);
+					setVaults(r.vaults);
+				} catch (e) {
+					flash(`库列表加载失败：${e instanceof Error ? e.message : String(e)}`, "err");
+				}
+			};
+			(0, react.useEffect)(() => {
+				load();
+				if (!workspaces) return;
+				let disposed = false;
+				const step = () => {
+					try {
+						const wsSnap = workspaces.list.getSnapshot();
+						let ssSnap;
+						let ssErr = "";
+						try {
+							ssSnap = sessions?.list.getSnapshot();
+						} catch (e) {
+							ssErr = String(e);
+						}
+						const sessCount = ssSnap?.byId ? Object.keys(ssSnap.byId).length : -1;
+						setDiag(`ws#${(wsSnap.items ?? []).length} ${String(wsSnap.state)}/${String(wsSnap.phase)} | ss=${sessions ? "ok" : "NO"}${ssErr ? `(err ${ssErr.slice(0, 30)})` : ""} ssP=${String(ssSnap?.phase)}/${String(ssSnap?.state)} cur=${ssSnap?.current ? ssSnap.current.slice(0, 12) : "∅"} sess#${sessCount} ready=${wsSnap.baselinesReady ? "y" : "n"} recent=${(wsSnap.recentWorkspaceId ?? "∅").slice(0, 8)}`);
+						if (disposed) return;
+						if (!(wsSnap.baselinesReady || wsSnap.phase === "ready")) return;
+						let targetRoot;
+						const currentId = ssSnap?.current;
+						if (currentId) {
+							const owning = (wsSnap.items ?? []).find((w) => w.sessionIds?.includes(currentId));
+							if (owning?.path) targetRoot = owning.path;
+							else {
+								const cwd = ssSnap?.byId?.[currentId]?.cwd;
+								if (cwd) targetRoot = cwd;
+							}
+						}
+						targetRoot ??= ((wsSnap.items ?? []).find((w) => w.id === wsSnap.recentWorkspaceId) ?? wsSnap.items?.[0])?.path;
+						setDiag((prev) => `${prev} → target=${targetRoot ? targetRoot.split(/[\\/]/).pop() : "∅"}`);
+						if (!targetRoot || disposed || activatedRootRef.current === targetRoot) return;
+						activatedRootRef.current = targetRoot;
+						activateVault(targetRoot).then((r) => {
+							if (disposed) return;
+							setCurrent(r.current);
+							setVaults(r.vaults);
+							onVaultChanged();
+						}).catch(() => {});
+					} catch (e) {
+						setDiag(`step err: ${String(e).slice(0, 80)}`);
+					}
+				};
+				step();
+				const timer = setInterval(step, 2e3);
+				const unsubWs = workspaces.list.subscribe(step);
+				const unsubSs = sessions?.list.subscribe(step);
+				return () => {
+					disposed = true;
+					clearInterval(timer);
+					unsubWs();
+					unsubSs?.();
+				};
+			}, [workspaces, sessions]);
+			const handleSwitch = async (id) => {
+				if (!id || id === current?.id) return;
+				setBusy(true);
+				try {
+					const r = await switchVault(id);
+					setCurrent(r.current);
+					setVaults(r.vaults);
+					onVaultChanged();
+				} catch (e) {
+					flash(`切换失败：${e instanceof Error ? e.message : String(e)}`, "err");
+				} finally {
+					setBusy(false);
+				}
+			};
+			const doAttach = async () => {
+				const root = formPath.trim();
+				if (!root) {
+					flash("请填写库目录（绝对路径）", "err");
+					return;
+				}
+				setBusy(true);
+				try {
+					const r = await attachVault(root, formName.trim() || void 0);
+					setCurrent(r.current);
+					setVaults(r.vaults);
+					setManageOpen(false);
+					setFormPath("");
+					setFormName("");
+					flash(`已挂接/新建：${r.current?.name ?? root}`);
+					onVaultChanged();
+				} catch (e) {
+					flash(`挂接失败：${e instanceof Error ? e.message : String(e)}`, "err");
+				} finally {
+					setBusy(false);
+				}
+			};
+			const doRemove = async () => {
+				if (!current || current.source !== "attached") return;
+				if (!window.confirm(`从列表中移除知识库「${current.name}」？\n不会删除磁盘上的任何文件。`)) return;
+				setBusy(true);
+				try {
+					const r = await removeVault(current.id);
+					setCurrent(r.current);
+					setVaults(r.vaults);
+					flash(`已移除「${current.name}」`);
+					onVaultChanged();
+				} catch (e) {
+					flash(`移除失败：${e instanceof Error ? e.message : String(e)}`, "err");
+				} finally {
+					setBusy(false);
+				}
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-vault",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-vault__identity",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "knj-vault__name",
+								title: current?.name,
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 15 }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "knj-vault__name-text",
+									children: current ? current.name : "知识库"
+								})]
+							}),
+							current && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "knj-vault__path",
+								title: current.root,
+								children: current.root
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
+							current?.source === "attached" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "knj-icon-btn knj-icon-btn--danger",
+								title: "从列表移除（不删文件）",
+								onClick: doRemove,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconTrash, { size: 14 })
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "knj-icon-btn",
+								title: "新建 / 挂接 / 移除知识库",
+								onClick: () => setManageOpen(!manageOpen),
+								children: manageOpen ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronDown, { size: 14 }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGear, { size: 14 })
+							})
+						]
+					}),
+					diag && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "knj-diag",
+						style: {
+							fontSize: 11,
+							lineHeight: 1.4,
+							color: "var(--knj-text-3, #888)",
+							wordBreak: "break-all",
+							margin: "2px 0 4px"
+						},
+						children: diag
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+						className: "knj-select knj-vault__select",
+						value: current?.id ?? "",
+						onChange: (e) => handleSwitch(e.target.value),
+						disabled: busy,
+						title: "切换知识库",
+						children: [vaults.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+							value: "",
+							children: "（无知识库）"
+						}), vaults.map((v) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("option", {
+							value: v.id,
+							children: [
+								v.name,
+								" · ",
+								v.pageCount,
+								" 页 · ",
+								SOURCE_LABEL[v.source] ?? v.source
+							]
+						}, v.id))]
+					}),
+					notice && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: `knj-banner ${notice.kind === "ok" ? "knj-banner--ok" : "knj-banner--err"}`,
+						style: { marginTop: 8 },
+						children: notice.text
+					}),
+					manageOpen && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-vault__manage",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "knj-vault__manage-row",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+								className: "knj-input",
+								value: formPath,
+								onChange: (e) => setFormPath(e.target.value),
+								placeholder: "库目录（绝对路径）",
+								spellCheck: false
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "knj-btn",
+								onClick: () => workspaces?.pickDirectory?.().then((p) => p && setFormPath(p)).catch(() => {}),
+								children: "选目录"
+							})]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "knj-vault__manage-row",
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+									className: "knj-input",
+									value: formName,
+									onChange: (e) => setFormName(e.target.value),
+									placeholder: "显示名（可留空）"
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: "knj-btn knj-btn--primary",
+									disabled: busy || !formPath.trim(),
+									onClick: doAttach,
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconPlus, { size: 14 }), busy ? "处理中…" : "新建/挂接"]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+									type: "button",
+									className: "knj-btn",
+									onClick: () => setManageOpen(false),
+									children: "取消"
+								})
+							]
+						})]
+					})
+				]
+			});
+		}
+		//#endregion
+		//#region src/client/WikiSidebar.tsx
+		/**
+		* 知识库边栏标签（设计 v2）：
+		* - 顶部：vault 头部（当前库身份 + 切换 + 新建/挂接/移除，v7）
+		* - 搜索（图标输入框 + 加载态）
+		* - 浏览/图谱分段切换；内容区随搜索结果 / 树 / 图谱切换
+		* - 底部状态条（LintPanel）：页数 + 健康度；「问题」「工具」面板展开
+		*/
+		function WikiSidebar({ openNote, workspaces, sessions }) {
+			const [results, setResults] = (0, react.useState)(null);
+			const [view, setView] = (0, react.useState)("browse");
+			const [vaultVersion, setVaultVersion] = (0, react.useState)(0);
+			/** v7：库切换后清掉旧库的搜索结果、刷新树/lint、重挂载图谱。 */
+			const handleVaultChanged = () => {
+				setResults(null);
+				setVaultVersion((v) => v + 1);
+				window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-wiki knj-vcol",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultHeader, {
+						workspaces,
+						sessions,
+						onVaultChanged: handleVaultChanged
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SearchBox, { onResult: setResults }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						style: { padding: "8px 12px 4px" },
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "knj-seg",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+								type: "button",
+								className: `knj-seg__item${view === "browse" ? " knj-seg__item--active" : ""}`,
+								onClick: () => setView("browse"),
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 13 }), "浏览"]
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+								type: "button",
+								className: `knj-seg__item${view === "graph" ? " knj-seg__item--active" : ""}`,
+								onClick: () => setView("graph"),
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGraph, { size: 13 }), "图谱"]
+							})]
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "knj-grow knj-scroll",
+						children: view === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GraphView, { onOpenNote: openNote }) }, vaultVersion) : results !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "knj-vcol",
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "knj-result-head",
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+											className: "knj-result-title",
+											children: [
+												"搜索结果（",
+												results.length,
+												"）"
+											]
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											className: "knj-icon-btn",
+											title: "返回浏览",
+											onClick: () => setResults(null),
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconClose, { size: 14 })
+										})
+									]
+								}),
+								results.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "knj-empty",
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "knj-empty__icon",
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 26 })
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "没有匹配的笔记" }),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "换个关键词试试，或对 agent 说「把 XX 吸收进 wiki」。" })
+									]
+								}),
+								results.map((c) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "knj-result-item",
+									onClick: () => openNote(c.id, c.category, c.title),
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+											style: {
+												fontSize: 13,
+												fontWeight: 500,
+												color: "var(--knj-text)"
+											},
+											children: c.title
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+											className: "knj-result-item__meta",
+											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+												className: `knj-chip knj-chip--${c.category}`,
+												children: c.category
+											}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: c.confidence })]
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+											className: "knj-result-item__snippet",
+											children: c.snippet
+										})
+									]
+								}, c.id))
+							]
+						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultTree, { onOpen: (p) => openNote(p.id, p.category, p.title) })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LintPanel, { openNote })
+				]
+			});
+		}
+		//#endregion
 		//#region src/client/NoteView.tsx
 		/**
 		* v5 笔记视图（设计 v2）：预览 / 源码双态。
@@ -5980,16 +6395,28 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 .knj-wiki .knj-dot--err { background: var(--knj-error); }
 .knj-wiki .knj-dot--muted { background: var(--knj-text-dim); }
 
-/* ============ 树（浏览视图） ============ */
-.knj-wiki .knj-tree { display: flex; flex-direction: column; gap: 2px; padding: 4px; }
-.knj-wiki .knj-tree__group { display: flex; flex-direction: column; }
-.knj-wiki .knj-tree__head { display: flex; align-items: center; gap: 6px; padding: 8px 10px 4px; font-size: 12px; font-weight: 600; color: var(--knj-text-3); }
+/* ============ 文件树（浏览视图，Obsidian 式：目录层层展开） ============ */
+.knj-wiki .knj-tree { display: flex; flex-direction: column; gap: 1px; padding: 6px 4px; }
+.knj-wiki .knj-tree__dir { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: var(--knj-radius-s); cursor: pointer; user-select: none; color: var(--knj-text-2); line-height: 22px; transition: background .1s ease; }
+.knj-wiki .knj-tree__dir:hover { background: var(--knj-hover); }
+.knj-wiki .knj-tree__chev { display: inline-flex; color: var(--knj-text-3); transition: transform .12s ease; flex-shrink: 0; }
+.knj-wiki .knj-tree__dir--open .knj-tree__chev { transform: rotate(90deg); }
+.knj-wiki .knj-tree__dir-icon { display: inline-flex; flex-shrink: 0; }
+.knj-wiki .knj-tree__dir-icon--concepts { color: var(--knj-cat-concepts); }
+.knj-wiki .knj-tree__dir-icon--entities { color: var(--knj-cat-entities); }
+.knj-wiki .knj-tree__dir-icon--dictionaries { color: var(--knj-cat-dictionaries); }
+.knj-wiki .knj-tree__dir-icon--tables { color: var(--knj-cat-tables); }
+.knj-wiki .knj-tree__dir-icon--references { color: var(--knj-cat-references); }
+.knj-wiki .knj-tree__dir-icon--synthesis { color: var(--knj-cat-synthesis); }
+.knj-wiki .knj-tree__dir-icon--projects { color: var(--knj-cat-projects); }
+.knj-wiki .knj-tree__dir-name { flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .knj-wiki .knj-tree__count { font-size: 11px; font-weight: 500; color: var(--knj-text-3); background: var(--knj-bg-1); border-radius: 999px; padding: 0 6px; line-height: 15px; }
-.knj-wiki .knj-tree__item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: var(--knj-radius-s); color: var(--knj-text-2); cursor: pointer; font-size: 13px; line-height: 20px; transition: background .1s ease, color .1s ease; }
+.knj-wiki .knj-tree__children { display: flex; flex-direction: column; gap: 1px; margin-left: 15px; padding-left: 6px; border-left: 1px solid var(--knj-border-soft); }
+.knj-wiki .knj-tree__empty { padding: 2px 8px 6px 30px; font-size: 11px; color: var(--knj-text-dim); }
+.knj-wiki .knj-tree__item { display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: var(--knj-radius-s); color: var(--knj-text-2); cursor: pointer; font-size: 13px; line-height: 20px; transition: background .1s ease, color .1s ease; }
 .knj-wiki .knj-tree__item:hover { background: var(--knj-hover); color: var(--knj-text); }
 .knj-wiki .knj-tree__item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .knj-wiki .knj-tree__item-icon { display: inline-flex; color: var(--knj-text-3); flex-shrink: 0; }
-.knj-wiki .knj-tree__group-icon { display: inline-flex; color: var(--knj-text-3); flex-shrink: 0; }
 
 /* ============ 状态条 / 展开面板 ============ */
 .knj-wiki .knj-statusbar { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--knj-border-soft); background: transparent; }
@@ -6034,6 +6461,28 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 .knj-wiki .knj-graph-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 12px 4px; }
 .knj-wiki .knj-graph-svg { display: block; width: 100%; height: auto; border-radius: var(--knj-radius-m); background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); }
 .knj-wiki .knj-graph-label { fill: var(--knj-text-2); font-size: 11px; pointer-events: none; }
+
+/* ============ 图谱全屏（v10） ============ */
+.knj-wiki .knj-graph-fs { position: fixed; inset: 0; z-index: 2147483000; background: var(--dsw-alias-canvas-background, var(--knj-bg-0, #101216)); animation: knj-fade-in .12s ease; }
+.knj-wiki .knj-graph-fs__head { display: flex; align-items: center; gap: 10px; }
+.knj-wiki .knj-graph-fs__row { display: flex; gap: 12px; flex: 1 1 auto; min-height: 0; }
+/* 全屏页签化（v10） */
+.knj-wiki .knj-fsbar { display: flex; align-items: center; gap: 10px; min-width: 0; flex-shrink: 0; }
+.knj-wiki .knj-fsbar__sep { width: 1px; height: 18px; background: var(--knj-border-soft); flex-shrink: 0; }
+.knj-wiki .knj-fstabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; flex: 1 1 auto; }
+.knj-wiki .knj-fstab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 3px 8px 3px 10px; border-radius: 7px; font-size: 12px; line-height: 18px; color: var(--knj-text-2); background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.knj-wiki .knj-fstab:hover { color: var(--knj-text); }
+.knj-wiki .knj-fstab--active { color: var(--knj-text); background: var(--knj-bg-2); border-color: var(--knj-border-strong); }
+.knj-wiki .knj-fstab__close { display: inline-flex; padding: 0; margin: 0; border: none; background: transparent; color: var(--knj-text-3); cursor: pointer; flex-shrink: 0; }
+.knj-wiki .knj-fstab__close:hover { color: var(--knj-text); }
+.knj-wiki .knj-fscanvas { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; }
+.knj-wiki .knj-graph-fs .knj-graph-svg { height: 100% !important; border: none; }
+.knj-wiki .knj-fspage { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); border-radius: var(--knj-radius-m); overflow: hidden; }
+.knj-wiki .knj-fspage__inner { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.knj-wiki .knj-fspage__bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--knj-border-soft); flex-shrink: 0; }
+.knj-wiki .knj-fspage__title { font-size: 13px; font-weight: 600; color: var(--knj-text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knj-wiki .knj-fspage__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px 24px 32px; }
+@keyframes knj-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ============ 笔记工作台 ============ */
 /* v11 滚动根容器：笔记 tab 渲染在右侧面板（宿主 paneContent overflow:hidden，无主区域滚动容器），
@@ -6104,35 +6553,50 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		* Built by tsdown into client/client.js.
 		*/
 		const name = "dsh-knj-obsidian";
-		const inject = ["betterSidebar"];
+		const inject = [
+			"betterSidebar",
+			"workspaces",
+			"sessions"
+		];
+		/** 双通道取宿主 client 服务：新版 ctx.get(name) → 旧版 ctx[name] 属性。 */
+		function hostService(ctx, name) {
+			try {
+				const viaGet = typeof ctx.get === "function" ? ctx.get(name) : void 0;
+				if (viaGet !== void 0 && viaGet !== null) return viaGet;
+			} catch {}
+			try {
+				const viaProp = ctx[name];
+				return viaProp !== void 0 && viaProp !== null ? viaProp : void 0;
+			} catch {
+				return;
+			}
+		}
 		function apply(ctx) {
 			ctx.effect(() => {
 				injectWikiStyles();
-				if (!ctx.betterSidebar) return;
-				let workspaces;
-				try {
-					workspaces = ctx.workspaces;
-				} catch {
-					workspaces = void 0;
-				}
+				const betterSidebar = hostService(ctx, "betterSidebar");
+				if (!betterSidebar) return;
+				const workspaces = hostService(ctx, "workspaces");
+				const sessions = hostService(ctx, "sessions");
 				const disposers = [];
 				/** 边栏点击笔记/图谱节点 → 主区域打开"笔记"工作台标签。 */
 				const openNote = (id, category, title) => {
-					ctx.betterSidebar?.openTab({
+					betterSidebar?.openTab({
 						type: "dsh-knj-obsidian:note",
 						title,
 						path: `${id}|${category}`
 					});
 				};
-				disposers.push(ctx.betterSidebar.registerTab({
+				disposers.push(betterSidebar.registerTab({
 					id: "dsh-knj-obsidian",
 					title: "知识库",
 					component: () => (0, react.createElement)(WikiSidebar, {
 						openNote,
-						workspaces
+						workspaces,
+						sessions
 					})
 				}));
-				disposers.push(ctx.betterSidebar.registerTab({
+				disposers.push(betterSidebar.registerTab({
 					id: "dsh-knj-obsidian:note",
 					title: "笔记",
 					component: (props) => (0, react.createElement)(NoteWorkbench, { path: props.tab?.path })

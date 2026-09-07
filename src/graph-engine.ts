@@ -55,6 +55,10 @@ export function buildGraph(store: VaultStore): GraphData {
     if (!e.broken) outgoing.set(e.source, (outgoing.get(e.source) ?? 0) + 1)
   }
 
+  // 孤儿定义（有意与 lint.ts 不同，双语义并存，勿"统一"）：
+  // - graph 此处为「严格语义」：完全无链接（!hasOut && !hasIn）才灰显——服务视觉呈现，
+  //   仅有入链的页不是视觉孤点（有测试断言背书）；
+  // - lint.ts 为「宽语义」（!hasOut || !hasIn 即提醒）——服务检查清单，提醒用户织入双向链接。
   const orphanIds = pages
     .filter((p) => {
       const hasOut = (outgoing.get(p.id) ?? 0) > 0
@@ -209,7 +213,7 @@ function render() {
     text.setAttribute('fill', '#e5e7eb');
     text.textContent = n.title;
     g.appendChild(text);
-    g.addEventListener('mousedown', (ev) => { dragNode = n; dragX = ev.clientX; dragY = ev.clientY; });
+    g.addEventListener('mousedown', (ev) => { dragNode = n; frame = 0; dragX = ev.clientX; dragY = ev.clientY; });
     g.addEventListener('mouseenter', () => { tooltip.style.display = 'block'; tooltip.textContent = n.title + '（' + n.category + '）'; });
     g.addEventListener('mousemove', (ev) => { tooltip.style.left = (ev.clientX + 12) + 'px'; tooltip.style.top = (ev.clientY + 12) + 'px'; });
     g.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
@@ -217,7 +221,13 @@ function render() {
   }
 }
 
-function loop() { for (let i = 0; i < 5; i++) tick(); render(); requestAnimationFrame(loop); }
+// 布局收敛后停止物理模拟（200 帧封顶，与 GraphView.tsx 的 frame < 200 对齐）：
+// 无终止的 rAF 循环 + O(n²) tick 会在布局收敛后持续占满单核。拖拽节点时重置计数恢复模拟。
+let frame = 0;
+function loop() {
+  if (frame < 200 || dragNode) { for (let i = 0; i < 5; i++) tick(); render(); frame++; }
+  requestAnimationFrame(loop);
+}
 svg.addEventListener('mousemove', (ev) => {
   if (!dragNode) return;
   const rect = svg.getBoundingClientRect();

@@ -37,9 +37,10 @@ test('pendingModules 只返回未完成模块', () => {
   assert.deepEqual(pendingModules(p).sort(), ['pay', 'user'])
 })
 
-test('progressFileFor 落在 vault _raw/_tools 下', () => {
+test('progressFileFor 落在 vault _system/tools 下，不混入原始资料目录', () => {
   const f = progressFileFor('D:/proj/.wiki', 'enum')
-  assert.ok(f.includes('_raw'), '应在 _raw 下')
-  assert.ok(f.includes('_tools'), '应在 _tools 下')
+  assert.ok(f.includes('_system'), '应在 _system 下')
+  assert.ok(f.includes('tools'), '应在 tools 下')
+  assert.ok(!f.includes('_raw'), '不得写入已退休的 _raw')
   assert.ok(f.endsWith('progress-enum.json'), '文件名带 kind')
 })

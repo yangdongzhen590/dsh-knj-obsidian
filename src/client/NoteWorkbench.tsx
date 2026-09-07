@@ -92,9 +92,9 @@ export function NoteWorkbench({ path, onPagesChanged }: { path?: string; onPages
     </div>
   )
 
-  // 根容器不能锁死 height:100%：否则 md 内容超高部分溢出却不产生滚动区域（v8 回归）。
-  // 改为内容自然撑高（minHeight 100% 保持满高观感），滚动交给宿主主区域容器。
-  return <div className="knj-wiki" style={{ height: 'auto', minHeight: '100%' }}>
+  // 根容器 = 滚动容器（knj-wb-scroll，见 styles.ts）：笔记 tab 渲染在右侧面板
+  // paneContent（overflow:hidden）内，没有宿主主区域滚动容器可依赖（v11 修正 v8 假设）。
+  return <div className="knj-wiki knj-wb-scroll">
     <div style={{ padding: '14px 28px 0', maxWidth: 880, margin: '0 auto' }}>
       {stack.length > 1 && (
         <button type='button' className="knj-btn knj-btn--sm knj-wb__back" onClick={back}>

@@ -197,16 +197,28 @@ export const WIKI_CSS = /* css */ `
 .knj-wiki .knj-dot--err { background: var(--knj-error); }
 .knj-wiki .knj-dot--muted { background: var(--knj-text-dim); }
 
-/* ============ 树（浏览视图） ============ */
-.knj-wiki .knj-tree { display: flex; flex-direction: column; gap: 2px; padding: 4px; }
-.knj-wiki .knj-tree__group { display: flex; flex-direction: column; }
-.knj-wiki .knj-tree__head { display: flex; align-items: center; gap: 6px; padding: 8px 10px 4px; font-size: 12px; font-weight: 600; color: var(--knj-text-3); }
+/* ============ 文件树（浏览视图，Obsidian 式：目录层层展开） ============ */
+.knj-wiki .knj-tree { display: flex; flex-direction: column; gap: 1px; padding: 6px 4px; }
+.knj-wiki .knj-tree__dir { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: var(--knj-radius-s); cursor: pointer; user-select: none; color: var(--knj-text-2); line-height: 22px; transition: background .1s ease; }
+.knj-wiki .knj-tree__dir:hover { background: var(--knj-hover); }
+.knj-wiki .knj-tree__chev { display: inline-flex; color: var(--knj-text-3); transition: transform .12s ease; flex-shrink: 0; }
+.knj-wiki .knj-tree__dir--open .knj-tree__chev { transform: rotate(90deg); }
+.knj-wiki .knj-tree__dir-icon { display: inline-flex; flex-shrink: 0; }
+.knj-wiki .knj-tree__dir-icon--concepts { color: var(--knj-cat-concepts); }
+.knj-wiki .knj-tree__dir-icon--entities { color: var(--knj-cat-entities); }
+.knj-wiki .knj-tree__dir-icon--dictionaries { color: var(--knj-cat-dictionaries); }
+.knj-wiki .knj-tree__dir-icon--tables { color: var(--knj-cat-tables); }
+.knj-wiki .knj-tree__dir-icon--references { color: var(--knj-cat-references); }
+.knj-wiki .knj-tree__dir-icon--synthesis { color: var(--knj-cat-synthesis); }
+.knj-wiki .knj-tree__dir-icon--projects { color: var(--knj-cat-projects); }
+.knj-wiki .knj-tree__dir-name { flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .knj-wiki .knj-tree__count { font-size: 11px; font-weight: 500; color: var(--knj-text-3); background: var(--knj-bg-1); border-radius: 999px; padding: 0 6px; line-height: 15px; }
-.knj-wiki .knj-tree__item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: var(--knj-radius-s); color: var(--knj-text-2); cursor: pointer; font-size: 13px; line-height: 20px; transition: background .1s ease, color .1s ease; }
+.knj-wiki .knj-tree__children { display: flex; flex-direction: column; gap: 1px; margin-left: 15px; padding-left: 6px; border-left: 1px solid var(--knj-border-soft); }
+.knj-wiki .knj-tree__empty { padding: 2px 8px 6px 30px; font-size: 11px; color: var(--knj-text-dim); }
+.knj-wiki .knj-tree__item { display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: var(--knj-radius-s); color: var(--knj-text-2); cursor: pointer; font-size: 13px; line-height: 20px; transition: background .1s ease, color .1s ease; }
 .knj-wiki .knj-tree__item:hover { background: var(--knj-hover); color: var(--knj-text); }
 .knj-wiki .knj-tree__item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .knj-wiki .knj-tree__item-icon { display: inline-flex; color: var(--knj-text-3); flex-shrink: 0; }
-.knj-wiki .knj-tree__group-icon { display: inline-flex; color: var(--knj-text-3); flex-shrink: 0; }
 
 /* ============ 状态条 / 展开面板 ============ */
 .knj-wiki .knj-statusbar { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--knj-border-soft); background: transparent; }
@@ -251,6 +263,28 @@ export const WIKI_CSS = /* css */ `
 .knj-wiki .knj-graph-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 12px 4px; }
 .knj-wiki .knj-graph-svg { display: block; width: 100%; height: auto; border-radius: var(--knj-radius-m); background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); }
 .knj-wiki .knj-graph-label { fill: var(--knj-text-2); font-size: 11px; pointer-events: none; }
+
+/* ============ 图谱全屏（v10） ============ */
+.knj-wiki .knj-graph-fs { position: fixed; inset: 0; z-index: 2147483000; background: var(--dsw-alias-canvas-background, var(--knj-bg-0, #101216)); animation: knj-fade-in .12s ease; }
+.knj-wiki .knj-graph-fs__head { display: flex; align-items: center; gap: 10px; }
+.knj-wiki .knj-graph-fs__row { display: flex; gap: 12px; flex: 1 1 auto; min-height: 0; }
+/* 全屏页签化（v10） */
+.knj-wiki .knj-fsbar { display: flex; align-items: center; gap: 10px; min-width: 0; flex-shrink: 0; }
+.knj-wiki .knj-fsbar__sep { width: 1px; height: 18px; background: var(--knj-border-soft); flex-shrink: 0; }
+.knj-wiki .knj-fstabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; flex: 1 1 auto; }
+.knj-wiki .knj-fstab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 3px 8px 3px 10px; border-radius: 7px; font-size: 12px; line-height: 18px; color: var(--knj-text-2); background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.knj-wiki .knj-fstab:hover { color: var(--knj-text); }
+.knj-wiki .knj-fstab--active { color: var(--knj-text); background: var(--knj-bg-2); border-color: var(--knj-border-strong); }
+.knj-wiki .knj-fstab__close { display: inline-flex; padding: 0; margin: 0; border: none; background: transparent; color: var(--knj-text-3); cursor: pointer; flex-shrink: 0; }
+.knj-wiki .knj-fstab__close:hover { color: var(--knj-text); }
+.knj-wiki .knj-fscanvas { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; }
+.knj-wiki .knj-graph-fs .knj-graph-svg { height: 100% !important; border: none; }
+.knj-wiki .knj-fspage { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); border-radius: var(--knj-radius-m); overflow: hidden; }
+.knj-wiki .knj-fspage__inner { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.knj-wiki .knj-fspage__bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--knj-border-soft); flex-shrink: 0; }
+.knj-wiki .knj-fspage__title { font-size: 13px; font-weight: 600; color: var(--knj-text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knj-wiki .knj-fspage__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px 24px 32px; }
+@keyframes knj-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ============ 笔记工作台 ============ */
 /* v11 滚动根容器：笔记 tab 渲染在右侧面板（宿主 paneContent overflow:hidden，无主区域滚动容器），

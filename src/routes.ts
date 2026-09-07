@@ -48,7 +48,9 @@ function isSameOrigin(request: IncomingMessage): boolean {
   return false
 }
 
-/** 读取请求体（拼接 data/end，超限 413）。 */
+/** 读取请求体（拼接 data/end，超限 413）。
+ *  超限时不 destroy socket：先让调用方把 413 响应写回去，再由连接层回收，
+ *  destroy-then-respond 的响应永远送不到客户端。 */
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
@@ -57,7 +59,7 @@ function readBody(request: IncomingMessage): Promise<string> {
       size += chunk.length
       if (size > MAX_BODY) {
         reject(new SaveError(413, 'body too large'))
-        request.destroy()
+        request.resume() // 丢弃剩余数据，让 end 正常到来（reject 后 resolve 无效）
         return
       }
       chunks.push(chunk)
@@ -96,7 +98,8 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider): () => 
       return
     }
     try {
-      const store = provider.current() as VaultStore
+      // GET 全部走只读视图（零 mkdir 写副作用）；写路径才走 current()（首次会 ensure 脚手架）
+      const store = (method === 'GET' ? provider.currentReadonly() : provider.current()) as VaultStore
       // ---- v7 vault 管理端点 ----
       if (path === `${BASE}/vaults` && method === 'GET') {
         sendJson(response, 200, { current: provider.currentRecord(), vaults: provider.listVaults() })
@@ -133,17 +136,16 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider): () => 
         return
       }
       if (method === 'GET' && path === `${BASE}/pages`) {
-        // listPages() 不含 confidence：逐页 readPage 补齐（计划 Self-Review 裁决），
-        // frontmatter 缺失/不可读的页面回退 'extracted'，与 graph-engine 的回退语义一致。
-        const pages = store.listPages().map((p) => ({
+        // listPagesReadonly：不触发 ensure()；逐页 readPage 走 mtime 缓存补齐 confidence
+        // （frontmatter 缺失/不可读的页面回退 'extracted'，与 graph-engine 的回退语义一致）。
+        const pages = store.listPagesReadonly().map((p) => ({
           ...p,
           confidence: store.readPage(p.id, p.category)?.confidence ?? 'extracted',
         }))
         sendJson(response, 200, { pages, total: pages.length })
         return
       }
-      if (path === `${BASE}/page`) {
-        const id = url.searchParams.get('id') ?? ''
+      if (path === `${BASE}/page`) {        const id = url.searchParams.get('id') ?? ''
         const category = (url.searchParams.get('category') ?? 'concepts') as Parameters<typeof store.readPage>[1]
         if (method === 'GET') {
           if (url.searchParams.get('raw') === '1') {

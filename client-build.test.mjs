@@ -19,7 +19,9 @@ test('client 构建产物存在且为 ModuleLoader 工厂', () => {
 test('package.json 声明 client 入口与构建脚本', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.dsh.client.platform, 'web')
-  assert.ok(pkg.dsh.client.inject.includes('dsh-better-sidebar'))
+  // 服务名是 betterSidebar（dsh-better-sidebar 源码 ctx.provide("betterSidebar")），
+  // 不是包名 dsh-better-sidebar：inject 写包名会让插件因找不到服务而永久 pending
+  assert.ok(pkg.dsh.client.inject.includes('betterSidebar'))
   assert.equal(pkg.exports['./client'].default, './client/client.js')
   assert.ok(pkg.scripts['build:client'])
 })

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { renderMarkdown } from './src/client/markdown.ts'
+import { renderMarkdown, PURIFY_CONFIG } from './src/client/markdown.ts'
 
 // fileURLToPath（而非 URL.pathname + join）：Windows 上 pathname 形如 /D:/…，
 // join 后产生 \\D:\…，fs 会解析成不存在的 D:\D:\…（见 client-build.test.mjs 同款约定）
@@ -51,4 +51,21 @@ test('NoteView.tsx 存在、含 wikilink 处理且 innerHTML 仅喂 renderMarkdo
   assert.match(text, /renderMarkdown/, '正文应经 renderMarkdown 渲染')
   assert.match(text, /dangerouslySetInnerHTML/, '正文容器使用 dangerouslySetInnerHTML')
   assert.match(text, /__html:\s*content/, 'innerHTML 仅喂 content 状态（content 只来自 renderMarkdown 输出或空串）')
+})
+
+test('笔记图片可显示：img 的 src/alt 不得被白名单剥掉，危险协议仍拦', () => {
+  // 契约层：DOMPurify 白名单必须放行 img 的 src/alt（浏览器路径）
+  assert.ok(PURIFY_CONFIG.ALLOWED_TAGS.includes('img'), 'img 标签应在白名单')
+  assert.ok(PURIFY_CONFIG.ALLOWED_ATTR.includes('src'), 'src 属性必须保留（否则全部笔记图片破图）')
+  assert.ok(PURIFY_CONFIG.ALLOWED_ATTR.includes('alt'), 'alt 属性应保留')
+
+  // 行为层：Node 回退路径同样渲染图片，相对路径可用
+  const out = renderMarkdown('![架构图](assets/arch.png)')
+  assert.ok(out.includes('<img'), '应渲染出 img 标签')
+  assert.ok(out.includes('src="assets/arch.png"'), '相对路径图片应可用')
+  assert.ok(out.includes('alt="架构图"'), 'alt 属性应保留')
+  // 协议防护：javascript: 协议剥成纯 alt 文本
+  const evil = renderMarkdown('![x](javascript:alert(1))')
+  assert.ok(!evil.includes('src="javascript:'), 'javascript: 协议必须被剥')
+  assert.ok(!evil.includes('<img'), '危险协议不产生 img')
 })

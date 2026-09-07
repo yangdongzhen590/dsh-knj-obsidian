@@ -90,7 +90,7 @@ export class VaultStore implements VaultProvider {
   ensure(): void {
     mkdirSync(this.wikiRoot, { recursive: true })
     for (const c of CATEGORIES) mkdirSync(join(this.wikiRoot, c), { recursive: true })
-    mkdirSync(join(this.wikiRoot, '_raw'), { recursive: true })
+    mkdirSync(join(this.wikiRoot, '_system', 'tools'), { recursive: true })
     const indexFile = join(this.wikiRoot, 'index.md')
     if (!existsSync(indexFile)) {
       writeFileSync(indexFile, [

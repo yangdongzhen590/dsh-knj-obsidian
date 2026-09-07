@@ -36,7 +36,7 @@ dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.257.tgz
 .wiki/
 ├── index.md          # 维护的索引页
 ├── .manifest.json    # 源材料增量追踪（contentHash → 跳过重复 ingest）
-├── _raw/             # 原始材料暂存
+├── _system/          # 会话归档、处理器与进度等内部运行数据（不参与知识检索）
 ├── concepts/         # 概念页
 ├── entities/         # 实体页
 ├── references/       # 参考资料
@@ -166,7 +166,7 @@ v5 解决笔记工作台的四个体验缺口（富渲染 / 双链导航 / 源�
 - **一键重建索引**：边栏「重建索引」→ `POST /rebuild-index`，从全部页面重生成 index.md（`- [[id]] 标题 — 摘要` 格式，retriever L1 零迁移兼容）。index.md 是派生工件——重建会覆盖手工注释，想保留的内容请写进页面本身
 - **导入现有 md**：边栏路径框（文件或目录）+ 分类选择 → `POST /import`。递归收集 .md（排除 node_modules/.git/target/dist，≤500 文件、单文件 ≤1MB、深度 ≤12）；已有合法 frontmatter 按声明原样入库，缺失的自动补全（id=文件名净化、title=首个标题、source=import:原路径）；id 冲突自动加 `-2` 后缀不覆盖；重导幂等（未变跳过、已变更新）；**源文件只读**
 - **lint 详情速修**：lint 徽标点击展开面板——断链/孤儿页/缺 frontmatter 逐条可点；断链打开来源页（修链在来源页），其余打开对应页，直接进源码态修
-- **会话蒸馏**：随包分发 `wiki-distill` skill（内嵌 zstd 多帧会话提取器，首次运行落位 `<vault>/_raw/_tools/`，vault 已有则用 vault 版）；边栏「蒸馏近期会话」按钮复制触发指令到剪贴板，粘贴到对话发送即可。skill 流程：确认范围（默认近 3 天当前项目）→ 提取 → 按主题蒸馏 → `wiki_ingest` 入库（contentHash 增量，重复源自动跳过）
+- **会话蒸馏**：随包分发 `wiki-distill` skill（内嵌 zstd 多帧会话提取器，首次运行落位 `<vault>/_system/tools/`，vault 已有则用 vault 版）；边栏「蒸馏近期会话」按钮复制触发指令到剪贴板，粘贴到对话发送即可。原始会话归档写入 `<vault>/_system/dsh-sessions/`，不参与知识检索；流程：确认范围（默认近 3 天当前项目）→ 提取 → 按主题蒸馏 → `wiki_ingest` 入库（contentHash 增量，重复源自动跳过）
 - **新端点安全**：两个新写端点沿用 v5 模式（同源 403 / 非 JSON 415）；import 对源路径只读，写入落点经 SAFE_ID 净化 + vault 包含性双校验
 
 ## v7：多 vault 管理

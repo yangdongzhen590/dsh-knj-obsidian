@@ -44,8 +44,10 @@ export function lintVault(store: VaultStore): LintReport {
     outCount.set(p.id, out)
   }
 
-  // 孤儿定义：双向链接未织好的页面都算孤儿（有出无入、有入无出、完全无链接），
-  // 即只有「既有出链又有入链」的页面才算真正织入图谱。
+  // 孤儿定义（有意与 graph-engine.ts 不同，双语义并存，勿"统一"）：
+  // - lint 此处为「宽语义」：双向链接未织好的页面都算孤儿（有出无入、有入无出、完全无链接），
+  //   即只有「既有出链又有入链」的页面才算真正织入图谱——服务检查清单；
+  // - graph-engine 为「严格语义」（!hasOut && !hasIn 才灰显）——服务视觉呈现，仅有入链的页不是视觉孤点。
   const orphans = pages
     .filter((p) => {
       const hasOut = (outCount.get(p.id) ?? 0) > 0

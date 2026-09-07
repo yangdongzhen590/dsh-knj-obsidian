@@ -160,14 +160,21 @@ export function importPath(
       }
     }
 
-    // id 冲突避让：库内已有且来源不同（重导判定见下）则加后缀
+    // id 冲突避让：库内已有且来源不同（重导判定见下）则加后缀。
+    // 先复用「本 source 已建立的 -N 页」更新，找不到才新建——否则每次重导都再避让一次，
+    // 生成 -3/-4/-5… 无限膨胀、旧页陈旧。
     const existing = store.readPage(id, cat)
     if (existing && existing.source !== page.source && existing.source !== `import:${src.path}`) {
-      let suffix = 2
-      while (store.readPage(`${id}-${suffix}`, cat)) suffix++
+      let own: WikiPage | null = null
+      let free = ''
+      for (let suffix = 2; !own && !free; suffix++) {
+        const candidate = store.readPage(`${id}-${suffix}`, cat)
+        if (!candidate) free = `${id}-${suffix}`
+        else if (candidate.source === page.source) own = candidate
+      }
       const renamed = true
-      id = `${id}-${suffix}`
-      page = { ...page, id }
+      id = own ? own.id : free
+      page = { ...page, id, ...(own ? { created: own.created } : {}) }
       const res: ImportFileResult = { source: src.path, id, category: cat, status: 'imported', renamed }
       store.writePage(page)
       report.imported++

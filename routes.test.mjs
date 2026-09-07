@@ -63,6 +63,15 @@ test('GET /pages 返回页面摘要列表', async (t) => {
   assert.equal(result.pages[0].confidence, 'extracted')
 })
 
+test('素材 API 已移除，避免系统会话归档进入任何素材链路', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const { host, handlers } = makeHost()
+  mountWikiRoutes(host, store)
+  const result = await req(handlers, '/api/obsidian-wiki/materials')
+  assert.equal(result.error, 'not found')
+})
+
 test('GET /page 返回单页内容', async (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))

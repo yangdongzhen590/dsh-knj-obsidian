@@ -27,7 +27,7 @@ description: >
 
 提取器随本 skill 分发（`wiki-distill/extract-dsh-sessions.cjs`）。规则：
 
-- 若 `<vault>/_raw/_tools/extract-dsh-sessions.cjs` **不存在** → 从 skill 目录复制过去（用文件工具，逐字节复制，禁止改写内容）
+- 若 `<vault>/_system/tools/extract-dsh-sessions.cjs` **不存在** → 从 skill 目录复制过去（用文件工具，逐字节复制，禁止改写内容）
 - 若**已存在** → 用 vault 版本（用户可能自行改进过）
 - vault 根：当前项目根目录下的 `.wiki/`（与宿主 process.cwd 一致；找不到就 `ls -a` 确认）
 
@@ -36,7 +36,7 @@ description: >
 ## 第 2 步：提取
 
 ```bash
-node <vault>/_raw/_tools/extract-dsh-sessions.cjs <sessions根> <vault>/_raw/dsh-sessions [项目过滤] [最早mtime]
+node <vault>/_system/tools/extract-dsh-sessions.cjs <sessions根> <vault>/_system/dsh-sessions [项目过滤] [最早mtime]
 ```
 
 - sessions 根：`~/.dsh/sessions`（Windows：`%USERPROFILE%\.dsh\sessions`）

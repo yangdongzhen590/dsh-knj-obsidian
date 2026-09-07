@@ -10,13 +10,14 @@ import { VaultTree } from './VaultTree.tsx'
 import { SearchBox } from './SearchBox.tsx'
 import { LintPanel } from './LintPanel.tsx'
 import { GraphView } from './GraphView.tsx'
-import { VaultHeader, type WorkspaceFace } from './VaultHeader.tsx'
+import { VaultHeader, type SessionFace, type WorkspaceFace } from './VaultHeader.tsx'
 import { IconBook, IconClose, IconGraph } from './icons.tsx'
 import type { SearchCandidate } from './api.ts'
 
-export function WikiSidebar({ openNote, workspaces }: {
+export function WikiSidebar({ openNote, workspaces, sessions }: {
   openNote: (id: string, category: string, title: string) => void
   workspaces?: WorkspaceFace
+  sessions?: SessionFace
 }) {
   const [results, setResults] = useState<SearchCandidate[] | null>(null)
   const [view, setView] = useState<'browse' | 'graph'>('browse')
@@ -30,8 +31,8 @@ export function WikiSidebar({ openNote, workspaces }: {
     window.dispatchEvent(new CustomEvent('wiki:pages-changed'))
   }
 
-  return <div className="knj-wiki knj-col">
-    <VaultHeader workspaces={workspaces} onVaultChanged={handleVaultChanged} />
+  return <div className="knj-wiki knj-vcol">
+    <VaultHeader workspaces={workspaces} sessions={sessions} onVaultChanged={handleVaultChanged} />
     <SearchBox onResult={setResults} />
 
     <div style={{ padding: '8px 12px 4px' }}>
@@ -52,7 +53,7 @@ export function WikiSidebar({ openNote, workspaces }: {
         // key=vaultVersion：库切换后强制重挂载，避免展示旧库图谱
         <div key={vaultVersion}><GraphView onOpenNote={openNote} /></div>
       ) : results !== null ? (
-        <div className="knj-col">
+        <div className="knj-vcol">
           <div className="knj-result-head">
             <span className="knj-result-title">搜索结果（{results.length}）</span>
             <span className="knj-statusbar__spacer" />

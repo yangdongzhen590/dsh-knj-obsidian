@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { buildGraph, exportGraphHtml } from './graph-engine.ts'
 import { mineEnums, mineTables } from './code-miner.ts'
 import { readProgress, markModule, pendingModules, progressFileFor } from './mining-progress.ts'
+import { relatedHits } from './related-check.ts'
 
 /** wiki_mine 输出的表候选 items（dbNew/dbChanged/dbUnchanged/tables 共用）。 */
 const TABLE_ITEM_SCHEMA = {
@@ -89,11 +90,39 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
           created: { type: 'array', items: { type: 'string' }, required: true },
           updated: { type: 'array', items: { type: 'string' }, required: true },
           skipped: { type: 'boolean', required: true },
+          // v9：每页库内相关已有页对账（agent 据此补链/去重）
+          relatedCheck: {
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                id: { type: 'string' }, title: { type: 'string' }, category: { type: 'string' },
+                related: {
+                  type: 'array',
+                  items: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                      id: { type: 'string' }, title: { type: 'string' }, category: { type: 'string' },
+                      matchedBy: { type: 'string' }, linked: { type: 'boolean' }, strong: { type: 'boolean' },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
-      render: (_args, value) => value.skipped
-        ? [{ type: 'text', text: '内容未变化，跳过本次 ingest' }]
-        : [{ type: 'text', text: `写入 wiki：新建 ${value.created.length} 页，更新 ${value.updated.length} 页` }],
+      render: (_args, value) => {
+        if (value.skipped) return [{ type: 'text', text: '内容未变化，跳过本次 ingest' }]
+        const rel = value.relatedCheck ?? []
+        const relSafe = rel.map((e) => ({ ...e, related: e.related ?? [] }))
+        const open = relSafe.flatMap((e) => e.related.filter((r) => !r.linked).map((r) => `${e.id} ↔ [[${r.id}]]`))
+        const dup = relSafe.flatMap((e) => e.related.filter((r) => r.strong).map((r) => `${e.id} 疑似与 [[${r.id}]] 重复`))
+        const tip = open.length + dup.length > 0
+          ? `；对账提示：${[...dup, ...open].slice(0, 6).join('；')}（未链可补链，重复建议并入已有页后重导）`
+          : ''
+        return [{ type: 'text', text: `写入 wiki：新建 ${value.created.length} 页，更新 ${value.updated.length} 页${tip}` }]
+      },
     },
     async execute(args) {
       const store = currentStore(provider)
@@ -107,6 +136,7 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
       const updated: string[] = []
       const now = new Date().toISOString()
       const produced: string[] = []
+      const createdPages: Array<{ id: string; title: string; category: WikiCategory; body: string }> = []
       for (const p of args.pages) {
         const cat = p.category as WikiCategory
         const conf = (p.confidence ?? 'extracted') as Confidence
@@ -140,7 +170,8 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
           body: p.body,
         }
         const res = store.writePage(page)
-        if (res.created) created.push(id); else updated.push(id)
+        if (res.created) { created.push(id); createdPages.push({ id, title: p.title, category: cat, body: p.body }) }
+        else updated.push(id)
         produced.push(id)
       }
       const hash = args.contentHash ?? store.sha256(args.source + JSON.stringify(args.pages))
@@ -149,7 +180,12 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
         last_ingested: now,
         pages_produced: produced,
       })
-      return { created, updated, skipped: false }
+      // v9：对本次新建的页检索库内相关已有页（排除同批产出），驱动 agent 补链/去重
+      const producedSet = new Set(produced)
+      const relatedCheck = createdPages
+        .map((cp) => ({ id: cp.id, title: cp.title, category: cp.category, related: relatedHits(store, producedSet, cp) }))
+        .filter((e) => e.related.length > 0)
+      return { created, updated, skipped: false, relatedCheck }
     },
   }))
 
@@ -162,8 +198,28 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
       category: { type: 'string', enum: ['concepts', 'entities', 'references', 'synthesis', 'projects', 'dictionaries', 'tables'] },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: { page: { type: 'string', required: true } } },
-      render: (_args, value) => [{ type: 'text', text: `已沉淀到 ${value.page}` }],
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          page: { type: 'string', required: true },
+          // v9：库内相关已有页（防重复沉淀 / 提示补链）
+          related: {
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                id: { type: 'string' }, title: { type: 'string' }, category: { type: 'string' },
+                matchedBy: { type: 'string' }, linked: { type: 'boolean' }, strong: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => {
+        const dup = (value.related ?? []).filter((r) => r.strong)
+        const tip = dup.length > 0 ? `；⚠ 库内已有同名页 [[${dup[0].id}]]，建议并入或改名` : ''
+        return [{ type: 'text', text: `已沉淀到 ${value.page}${tip}` }]
+      },
     },
     async execute(args) {
       const store = currentStore(provider)
@@ -175,7 +231,8 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
         id, title: args.title, category: cat, tags: [], source: 'agent:capture',
         confidence: 'inferred', created: now, updated: now, body: args.body,
       })
-      return { page: `${cat}/${id}.md` }
+      const related = relatedHits(store, new Set<string>(), { id, title: args.title, category: cat, body: args.body })
+      return { page: `${cat}/${id}.md`, related }
     },
   }))
 
@@ -391,6 +448,7 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
               type: 'object', additionalProperties: false,
               properties: {
                 module: { type: 'string' }, fileCount: { type: 'number' }, enumEstimate: { type: 'number' },
+                tableEstimate: { type: 'number' },
               },
             },
           },
@@ -462,13 +520,14 @@ export function mountTools(ctx: Context, provider: VaultProvider): () => void {
 
       const note = enums.length === 0 && deleted.length === 0 && tables.length === 0 && dbDeleted.length === 0
         ? '当前项目未发现枚举/常量类或数据库表结构' : undefined
-      return {
+      // lossless JSON：execute 返回值会跨进程序列化，undefined 字段（EnumValue.code/label 等 optional）会被拒绝。
+      return JSON.parse(JSON.stringify({
         enums, new: newE, changed: changedE, unchanged: unchangedE, deleted,
         tables, dbNew, dbChanged, dbUnchanged, dbDeleted,
         outline: [...enumResult.outline, ...tableResult.outline],
         modules: [...enumResult.modules, ...tableResult.modules],
         remaining: resumeOnly ? resumeOnly.size : (enumResult.modules.length + tableResult.modules.length), note,
-      }
+      }))
     },
   }))
 
