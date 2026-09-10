@@ -40,7 +40,16 @@ interface ClientContext {
   effect(callback: () => unknown, label?: string): void
 }
 
-export const inject = ['betterSidebar', 'workspaces', 'sessions']
+/**
+ * v9 桥接面：better-sidebar tab 宿主把当前会话的 composer 草稿写入能力暴露为
+ * `conversation.input.for(sessionScope).setDraft(text)`（可见、可编辑、用户回车发送）。
+ * 结构类型：不 import dsh-better-sidebar 类型（junction 无该包）。
+ */
+interface ConversationInputFace { for?(actx: unknown): { setDraft?(text: string): void } }
+interface ConversationFace { input?: ConversationInputFace }
+interface SessionServiceFace extends SessionFace { scope?(id: string): unknown }
+
+export const inject = ['betterSidebar', 'workspaces', 'sessions', 'conversation']
 
 /** 双通道取宿主 client 服务：新版 ctx.get(name) → 旧版 ctx[name] 属性。 */
 function hostService<T>(ctx: ClientContext, name: string): T | undefined {
@@ -64,7 +73,48 @@ export function apply(ctx: ClientContext): void {
     if (!betterSidebar) return
     // v7/v8.1：防御性读取宿主工作区/会话运行时；不可用时降级为手动切换（不阻塞标签渲染）
     const workspaces = hostService<WorkspaceFace>(ctx, 'workspaces')
-    const sessions = hostService<SessionFace>(ctx, 'sessions')
+    const sessions = hostService<SessionServiceFace>(ctx, 'sessions')
+    const conversation = hostService<ConversationFace>(ctx, 'conversation')
+    /**
+     * v9：把受限指令交给「当前对话」的 Agent——填入该会话 composer 输入框（可见可编辑，
+     * 用户回车即发送，无隐藏 Agent）。返回 ''=成功；非空=失败原因（UI 显示并退回复制）。
+     * 调用序列镜像宿主 better-sidebar 规范（client.js:13344）：
+     *   actx = sessions.scope(id) → conversation = ctx.get('conversation')
+     *   → input = conversation.input.for(actx) → input.state.getSnapshot() → input.setDraft(text)
+     */
+    const sendToAgent = (text: string): string => {
+      const fail = (reason: string): string => {
+        console.warn('[knj] sendToAgent failed:', reason)
+        return reason
+      }
+      try {
+        if (!text) return fail('empty instruction')
+        let snap: { current?: string; items?: Array<{ id: string }> } | undefined
+        try { snap = sessions?.list.getSnapshot() as { current?: string; items?: Array<{ id: string }> } | undefined } catch (e) { return fail(`sessions.list.getSnapshot threw: ${String(e)}`) }
+        if (!sessions) return fail('host service "sessions" unavailable')
+        if (!snap) return fail('sessions.list snapshot empty')
+        const current = typeof snap.current === 'string' && snap.current ? snap.current : snap.items?.[0]?.id
+        if (!current) return fail('no current session id in snapshot')
+        let actx: unknown
+        try { actx = sessions.scope?.(current) } catch (e) { return fail(`sessions.scope(${current}) threw: ${String(e)}`) }
+        if (actx === undefined || actx === null) return fail(`sessions.scope("${current}") returned nothing`)
+        let conversation: { input?: { for?(actx: unknown): { state?: { getSnapshot?(): { draft?: string } }; setDraft?(text: string): void; actions?: { setDraft?(text: string): void } } | undefined } } | undefined
+        try {
+          conversation = (typeof ctx.get === 'function' ? ctx.get('conversation') : undefined) as typeof conversation
+        } catch (e) { return fail(`ctx.get('conversation') threw: ${String(e)}`) }
+        if (!conversation) return fail('host service "conversation" unavailable via ctx.get')
+        let input: { state?: { getSnapshot?(): { draft?: string } }; setDraft?(text: string): void; actions?: { setDraft?(text: string): void } } | undefined
+        try { input = conversation.input?.for?.(actx) } catch (e) { return fail(`conversation.input.for threw: ${String(e)}`) }
+        if (!input) return fail('conversation.input.for(scope) returned nothing')
+        try { input.state?.getSnapshot?.() } catch (e) { return fail(`input.state.getSnapshot threw: ${String(e)}`) }
+        const setDraft = typeof input.setDraft === 'function' ? input.setDraft : input.actions?.setDraft
+        if (typeof setDraft !== 'function') return fail('no setDraft on input face')
+        try { setDraft.call(input, text) } catch (e) { return fail(`setDraft threw: ${String(e)}`) }
+        return ''
+      } catch (e) {
+        return fail(`unexpected: ${String(e)}`)
+      }
+    }
     const disposers: Array<() => void> = []
     /** 边栏点击笔记/图谱节点 → 主区域打开"笔记"工作台标签。 */
     const openNote = (id: string, category: string, title: string): void => {
@@ -74,7 +124,7 @@ export function apply(ctx: ClientContext): void {
     disposers.push(betterSidebar.registerTab({
       id: 'dsh-knj-obsidian',
       title: '知识库',
-      component: () => h(WikiSidebar, { openNote, workspaces, sessions }),
+      component: () => h(WikiSidebar, { openNote, workspaces, sessions, sendToAgent }),
     }))
     // 主区域工作台标签（笔记视图，读 tab.path 的 id|category）
     disposers.push(betterSidebar.registerTab({

@@ -112,15 +112,19 @@ export function LintPanel({ openNote }: { openNote: (id: string, category: strin
         </button>
       </div>
       <div className="knj-pop__row">
+        <span className="knj-section-title"><IconImport size={13} />快速导入（直接写入）</span>
+      </div>
+      <div className="knj-pop__hint" style={{ color: 'var(--knj-warn)' }}>直接写入，跳过受审阅流程与哈希校验；如需先审阅请用「采集」视图。</div>
+      <div className="knj-pop__row">
         <input className="knj-input" value={importPathInput}
           onChange={(e) => setImportPathInput(e.target.value)}
-          placeholder="导入 md：文件或目录路径" spellCheck={false} />
+          placeholder="md 文件或目录路径" spellCheck={false} />
         <select className="knj-select" style={{ width: 76, flexShrink: 0 }} value={importCategory}
           onChange={(e) => setImportCategory(e.target.value)} title='导入分类'>
           {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
         <button type='button' className="knj-btn knj-btn--primary" disabled={busy === 'import'} onClick={doImport}>
-          <IconImport size={14} />{busy === 'import' ? '导入中…' : '导入'}
+          <IconImport size={14} />{busy === 'import' ? '导入中…' : '直接导入'}
         </button>
       </div>
       <div className="knj-pop__hint">重建索引会重新生成 index.md；蒸馏会把触发指令复制到剪贴板。</div>

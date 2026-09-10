@@ -605,6 +605,18 @@ window.__ModuleLoader__.load({
 								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconSparkles, { size: 14 }), "蒸馏近期会话"]
 							})]
 						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "knj-pop__row",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "knj-section-title",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconImport, { size: 13 }), "快速导入（直接写入）"]
+							})
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "knj-pop__hint",
+							style: { color: "var(--knj-warn)" },
+							children: "直接写入，跳过受审阅流程与哈希校验；如需先审阅请用「采集」视图。"
+						}),
 						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: "knj-pop__row",
 							children: [
@@ -612,7 +624,7 @@ window.__ModuleLoader__.load({
 									className: "knj-input",
 									value: importPathInput,
 									onChange: (e) => setImportPathInput(e.target.value),
-									placeholder: "导入 md：文件或目录路径",
+									placeholder: "md 文件或目录路径",
 									spellCheck: false
 								}),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
@@ -634,7 +646,7 @@ window.__ModuleLoader__.load({
 									className: "knj-btn knj-btn--primary",
 									disabled: busy === "import",
 									onClick: doImport,
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconImport, { size: 14 }), busy === "import" ? "导入中…" : "导入"]
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconImport, { size: 14 }), busy === "import" ? "导入中…" : "直接导入"]
 								})
 							]
 						}),
@@ -5537,6 +5549,133 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			});
 		}
 		//#endregion
+		//#region src/client/CodeCollectLauncher.tsx
+		const SCOPE_LABELS = [
+			{
+				value: "enum",
+				label: "枚举/常量字典",
+				detail: "Java enum + public static final 常量 → dictionaries"
+			},
+			{
+				value: "db",
+				label: "表结构",
+				detail: "SQL DDL / MyBatis XML / JPA Entity → tables"
+			},
+			{
+				value: "both",
+				label: "全部",
+				detail: "字典 + 表结构一次采集"
+			}
+		];
+		/** 启动器触发指令（引用内置 wiki-collect skill；GUI 不产生任何草稿/状态机）。 */
+		function buildTrigger(kind) {
+			return [
+				"请使用内置 wiki-collect skill 在当前工作区执行代码结构采集：",
+				`采集类型 = ${kind}（enum=Java 枚举/常量字典；db=SQL DDL/MyBatis/JPA 表结构；both=全部）。`,
+				"步骤：用 wiki_mine 扫描并对账存量知识（new/changed/unchanged/deleted，含同名近似页提醒）→ 蒸馏 → 直接 wiki_ingest 入库。",
+				"规则：仅支持 Java enum、Java public static final、SQL DDL、MyBatis XML、JPA Entity；不支持 TypeScript/Python/Go/任意 ORM/JSON Schema。",
+				"不得读取 .dsh 会话归档等非代码源；未知/推断字段保持 unknown/inferred，不得补造成事实；不得覆盖他源页面。",
+				"完成后报告：本批 new/changed/unchanged/deleted 数量、入库页数与剩余模块（如有）。"
+			].join("\n");
+		}
+		/** GUI 采集启动器：只把触发指令交给当前对话 Agent（预填输入框），复制为兜底。 */
+		function CodeCollectLauncher({ sendToAgent }) {
+			const [kind, setKind] = (0, react.useState)("both");
+			const [message, setMessage] = (0, react.useState)("");
+			const deliver = async (copyOnly) => {
+				const text = buildTrigger(kind);
+				if (!copyOnly && sendToAgent) {
+					const reason = sendToAgent(text);
+					if (!reason) {
+						setMessage("触发指令已填入当前对话输入框：查看后按回车发送，Agent 会用 wiki-collect 采集并直接入库。");
+						return;
+					}
+					setMessage(`无法自动预填输入框（${reason}）：触发指令已复制到剪贴板，请粘贴到对话发送给 Agent。`);
+					try {
+						await navigator.clipboard.writeText(text);
+					} catch {}
+					return;
+				}
+				try {
+					await navigator.clipboard.writeText(text);
+				} catch {}
+				setMessage("触发指令已复制到剪贴板，请粘贴到对话发送给 Agent（当前对话框无法自动预填）。");
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-vcol",
+				style: {
+					padding: 12,
+					gap: 10
+				},
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "knj-banner knj-banner--info",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", { children: "代码结构采集" }),
+							"：把当前工作区的枚举/常量字典与表结构采集进知识库。 点击后把触发指令交给当前对话 Agent，由它用内置 ",
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", { children: "wiki-collect" }),
+							" skill 完成 扫描 → 联动存量对账 → 蒸馏 → 直接入库（按你的决策不做二次确认；知识库纳入 git 分支合并把关已预留）。 本视图不产生草稿状态，也不直接写库。"
+						] })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-pop__hint",
+						children: [
+							"支持：Java enum、Java public static final、SQL DDL、MyBatis XML、JPA Entity。",
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("br", {}),
+							"不支持：TypeScript、Python、Go、任意 ORM、JSON Schema。只读代码文件，不读会话归档。"
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "knj-vcol",
+						style: { gap: 6 },
+						children: SCOPE_LABELS.map((s) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+							className: "knj-result-item",
+							style: { cursor: "pointer" },
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "knj-hrow",
+								style: { gap: 7 },
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+									type: "radio",
+									name: "collect-kind",
+									checked: kind === s.value,
+									onChange: () => setKind(s.value)
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									style: { fontWeight: 500 },
+									children: s.label
+								})]
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "knj-pop__hint",
+								children: s.detail
+							})]
+						}, s.value))
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-pop__row",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+							type: "button",
+							className: "knj-btn knj-btn--primary",
+							onClick: () => deliver(false),
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconSparkles, { size: 14 }), "预填当前对话开始采集"]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+							type: "button",
+							className: "knj-btn knj-btn--subtle",
+							onClick: () => deliver(true),
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconCopy, { size: 14 }), "复制触发指令"]
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "knj-pop__hint",
+						children: "触发指令会写入对话输入框（可见可编辑），你确认后回车即发送给 Agent。"
+					}),
+					message && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "knj-banner knj-banner--info",
+						style: { color: "var(--knj-text)" },
+						children: message
+					})
+				]
+			});
+		}
+		//#endregion
 		//#region src/client/VaultHeader.tsx
 		/**
 		* v7 vault 头部（设计 v2）：当前库身份（名称+路径）、切换下拉、新建/挂接/移除。
@@ -5805,7 +5944,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		* - 浏览/图谱分段切换；内容区随搜索结果 / 树 / 图谱切换
 		* - 底部状态条（LintPanel）：页数 + 健康度；「问题」「工具」面板展开
 		*/
-		function WikiSidebar({ openNote, workspaces, sessions }) {
+		function WikiSidebar({ openNote, workspaces, sessions, sendToAgent }) {
 			const [results, setResults] = (0, react.useState)(null);
 			const [view, setView] = (0, react.useState)("browse");
 			const [vaultVersion, setVaultVersion] = (0, react.useState)(0);
@@ -5828,22 +5967,31 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						style: { padding: "8px 12px 4px" },
 						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: "knj-seg",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-								type: "button",
-								className: `knj-seg__item${view === "browse" ? " knj-seg__item--active" : ""}`,
-								onClick: () => setView("browse"),
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 13 }), "浏览"]
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-								type: "button",
-								className: `knj-seg__item${view === "graph" ? " knj-seg__item--active" : ""}`,
-								onClick: () => setView("graph"),
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGraph, { size: 13 }), "图谱"]
-							})]
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: `knj-seg__item${view === "browse" ? " knj-seg__item--active" : ""}`,
+									onClick: () => setView("browse"),
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 13 }), "浏览"]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: `knj-seg__item${view === "graph" ? " knj-seg__item--active" : ""}`,
+									onClick: () => setView("graph"),
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconGraph, { size: 13 }), "图谱"]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: `knj-seg__item${view === "collect" ? " knj-seg__item--active" : ""}`,
+									onClick: () => setView("collect"),
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconImport, { size: 13 }), "代码采集"]
+								})
+							]
 						})
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "knj-grow knj-scroll",
-						children: view === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GraphView, { onOpenNote: openNote }) }, vaultVersion) : results !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						children: view === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GraphView, { onOpenNote: openNote }) }, vaultVersion) : view === "collect" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CodeCollectLauncher, { sendToAgent }) : results !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: "knj-vcol",
 							children: [
 								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -6556,7 +6704,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		const inject = [
 			"betterSidebar",
 			"workspaces",
-			"sessions"
+			"sessions",
+			"conversation"
 		];
 		/** 双通道取宿主 client 服务：新版 ctx.get(name) → 旧版 ctx[name] 属性。 */
 		function hostService(ctx, name) {
@@ -6578,6 +6727,69 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				if (!betterSidebar) return;
 				const workspaces = hostService(ctx, "workspaces");
 				const sessions = hostService(ctx, "sessions");
+				hostService(ctx, "conversation");
+				/**
+				* v9：把受限指令交给「当前对话」的 Agent——填入该会话 composer 输入框（可见可编辑，
+				* 用户回车即发送，无隐藏 Agent）。返回 ''=成功；非空=失败原因（UI 显示并退回复制）。
+				* 调用序列镜像宿主 better-sidebar 规范（client.js:13344）：
+				*   actx = sessions.scope(id) → conversation = ctx.get('conversation')
+				*   → input = conversation.input.for(actx) → input.state.getSnapshot() → input.setDraft(text)
+				*/
+				const sendToAgent = (text) => {
+					const fail = (reason) => {
+						console.warn("[knj] sendToAgent failed:", reason);
+						return reason;
+					};
+					try {
+						if (!text) return fail("empty instruction");
+						let snap;
+						try {
+							snap = sessions?.list.getSnapshot();
+						} catch (e) {
+							return fail(`sessions.list.getSnapshot threw: ${String(e)}`);
+						}
+						if (!sessions) return fail("host service \"sessions\" unavailable");
+						if (!snap) return fail("sessions.list snapshot empty");
+						const current = typeof snap.current === "string" && snap.current ? snap.current : snap.items?.[0]?.id;
+						if (!current) return fail("no current session id in snapshot");
+						let actx;
+						try {
+							actx = sessions.scope?.(current);
+						} catch (e) {
+							return fail(`sessions.scope(${current}) threw: ${String(e)}`);
+						}
+						if (actx === void 0 || actx === null) return fail(`sessions.scope("${current}") returned nothing`);
+						let conversation;
+						try {
+							conversation = typeof ctx.get === "function" ? ctx.get("conversation") : void 0;
+						} catch (e) {
+							return fail(`ctx.get('conversation') threw: ${String(e)}`);
+						}
+						if (!conversation) return fail("host service \"conversation\" unavailable via ctx.get");
+						let input;
+						try {
+							input = conversation.input?.for?.(actx);
+						} catch (e) {
+							return fail(`conversation.input.for threw: ${String(e)}`);
+						}
+						if (!input) return fail("conversation.input.for(scope) returned nothing");
+						try {
+							input.state?.getSnapshot?.();
+						} catch (e) {
+							return fail(`input.state.getSnapshot threw: ${String(e)}`);
+						}
+						const setDraft = typeof input.setDraft === "function" ? input.setDraft : input.actions?.setDraft;
+						if (typeof setDraft !== "function") return fail("no setDraft on input face");
+						try {
+							setDraft.call(input, text);
+						} catch (e) {
+							return fail(`setDraft threw: ${String(e)}`);
+						}
+						return "";
+					} catch (e) {
+						return fail(`unexpected: ${String(e)}`);
+					}
+				};
 				const disposers = [];
 				/** 边栏点击笔记/图谱节点 → 主区域打开"笔记"工作台标签。 */
 				const openNote = (id, category, title) => {
@@ -6593,7 +6805,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					component: () => (0, react.createElement)(WikiSidebar, {
 						openNote,
 						workspaces,
-						sessions
+						sessions,
+						sendToAgent
 					})
 				}));
 				disposers.push(betterSidebar.registerTab({

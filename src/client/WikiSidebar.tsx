@@ -10,17 +10,20 @@ import { VaultTree } from './VaultTree.tsx'
 import { SearchBox } from './SearchBox.tsx'
 import { LintPanel } from './LintPanel.tsx'
 import { GraphView } from './GraphView.tsx'
+import { CodeCollectLauncher } from './CodeCollectLauncher.tsx'
 import { VaultHeader, type SessionFace, type WorkspaceFace } from './VaultHeader.tsx'
-import { IconBook, IconClose, IconGraph } from './icons.tsx'
+import { IconBook, IconClose, IconGraph, IconImport } from './icons.tsx'
 import type { SearchCandidate } from './api.ts'
 
-export function WikiSidebar({ openNote, workspaces, sessions }: {
+export function WikiSidebar({ openNote, workspaces, sessions, sendToAgent }: {
   openNote: (id: string, category: string, title: string) => void
   workspaces?: WorkspaceFace
   sessions?: SessionFace
+  /** v9：预填当前对话输入框。返回 ''=成功，非空=失败原因（UI 显示并退回复制）。 */
+  sendToAgent?: (instruction: string) => string
 }) {
   const [results, setResults] = useState<SearchCandidate[] | null>(null)
-  const [view, setView] = useState<'browse' | 'graph'>('browse')
+  const [view, setView] = useState<'browse' | 'graph' | 'collect'>('browse')
   // v7：库切换时自增，强制图谱重挂载（取数当前库）
   const [vaultVersion, setVaultVersion] = useState(0)
 
@@ -45,6 +48,10 @@ export function WikiSidebar({ openNote, workspaces, sessions }: {
           onClick={() => setView('graph')}>
           <IconGraph size={13} />图谱
         </button>
+        <button type='button' className={`knj-seg__item${view === 'collect' ? ' knj-seg__item--active' : ''}`}
+          onClick={() => setView('collect')}>
+          <IconImport size={13} />代码采集
+        </button>
       </div>
     </div>
 
@@ -52,6 +59,8 @@ export function WikiSidebar({ openNote, workspaces, sessions }: {
       {view === 'graph' ? (
         // key=vaultVersion：库切换后强制重挂载，避免展示旧库图谱
         <div key={vaultVersion}><GraphView onOpenNote={openNote} /></div>
+      ) : view === 'collect' ? (
+        <CodeCollectLauncher sendToAgent={sendToAgent} />
       ) : results !== null ? (
         <div className="knj-vcol">
           <div className="knj-result-head">

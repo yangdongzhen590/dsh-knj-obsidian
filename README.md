@@ -200,6 +200,26 @@ v8 对 v4–v7 的 UI 做整体重设计，方向为**宿主原生**（native to
 - **图谱**：节点/边颜色改走宿主令牌（浅/深主题均可读），新增统计与分类图例
 - **笔记工作台**：标题层级、元信息 chip、分段切换、markdown 排版（标题/引用/表格/代码/任务列表）按宿主字体阶梯对齐
 
+## v9：代码结构采集（GUI 启动器 + wiki-collect skill）
+
+v9 把「本地工程代码 → 知识页」做成 **agent 会话驱动**的采集：GUI 只当启动器，把触发指令交给
+当前对话的 Agent，由内置 `wiki-collect` skill 完成扫描 → 联动存量对账 → 蒸馏 → **直接入库**
+（用户决策：不做二次确认；知识库纳入 git 分支合并把关已预留，暂未实现）。
+
+- **内置 `wiki-collect` skill**（`wiki-collect/SKILL.md`，随包分发）：用 `wiki_mine` 扫描
+  枚举/常量（→ dictionaries）与 SQL DDL/MyBatis/JPA 表结构（→ tables）并对账存量知识
+  （new/changed/unchanged/deleted + 同名近似页提醒），蒸馏后经 `wiki_ingest` 直接入库
+  （contentHash 增量跳过、未知/推断保持 unknown/inferred、不覆盖他源页面、不读会话归档）
+- **GUI 启动器**：边栏「知识库」→「代码采集」分段——选择范围（枚举/常量字典 / 表结构 / 全部）
+  后点「预填当前对话开始采集」，宿主把触发指令填入当前对话输入框（可见可编辑，回车即发送给
+  Agent）；宿主不支持预填时退化为「复制触发指令」自行粘贴
+- **诚实范围披露**：支持 Java enum、Java public static final、SQL DDL、MyBatis XML、JPA Entity；
+  不支持 TypeScript / Python / Go / 任意 ORM / JSON Schema（UI 与 skill 均写明）
+- **授权模型**：GUI 点击 = 显式触发（= 授权）；skill 内部直接入库，不设中间草稿/确认状态机；
+  报告在会话中可见，用户可随时打断；未来 git 分支合并作为写入把关（预留扩展位，未实现）
+- **快速导入（直接写入）**：底部「工具」面板的 md 导入保留 API 兼容，UI 标注为
+  「快速导入（直接写入）——跳过受审阅流程与哈希校验」，为高级路径
+
 ## 路线
 
 - ~~**检索**~~ ✅ 已上线：`wiki_query` 工具 + `wiki-query` skill 双通道分层检索
@@ -208,14 +228,17 @@ v8 对 v4–v7 的 UI 做整体重设计，方向为**宿主原生**（native to
 - ~~**编辑**~~ ✅ 已上线：富渲染 + 双链导航 + 源码视图 + 全文编辑（v5）
 - ~~**历史会话挖掘**~~ ✅ 已上线：wiki-distill skill + 边栏蒸馏按钮（v6）
 - ~~**vault 跟随项目**~~ ✅ 已上线：多库管理 + 跟随工作区（v7）——当前库身份、库列表/切换、新建/挂接/移除、注册表持久化
+- ~~**代码结构采集**~~ ✅ 已上线：GUI 启动器 + 内置 wiki-collect skill（v9）——点击预填当前对话 → agent 扫描对账 → 直接入库
 
 ## 开发
 
 ```bash
 npm run check   # typecheck + build（服务端）
 npm run check:client && npm run build:client   # 客户端类型检查 + bundle
-node --test *.test.mjs   # 全部测试（126+ 例：smoke / vault-store / vault-manager / tools / ingest-delta / lint / retriever / graph-engine / wiki-export-tool / wiki-query-tool / wiki-query-skill / routes / vault-routes / save-route / incremental-routes / index-builder / importer / client-build / client-api / markdown / markdown-v2 / markdown-v3 / graph-view）
+node --test *.test.mjs   # 全部测试（186 例；含 collection-client 启动器契约）
 ```
+
+> 已知基线：`wiki_ingest` 的 `relatedCheck` 输出是 master 工作树中尚未收尾的 WIP（`src/tools.ts` 已新增输出但 `ingest-delta.test.mjs` / `tools.test.mjs` 断言未同步），与 v9 功能无关；相关 8 例在 master 原工作树同样失败。
 
 ## License
 
