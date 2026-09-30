@@ -214,7 +214,7 @@ function textOfEvent(event: SessionEventLike): string {
 
 /**
  * 最近一条**直接用户**任务（`user/message` 且 `source.kind === 'user'`）。
- * 判据对齐 dsh-doublecheck 的折叠逻辑：插件注入（kind: 'plugin'）、宿主注入的 AGENTS.md
+ * 判据对齐 dsh-doublecheck 的折叠逻辑：插件注入（kind: 'plugin:<name>'，会话格式 v4 起）、宿主注入的 AGENTS.md
  * （kind: 'agent-instructions'）、运行时上下文快照等一律不算任务——
  * 否则本插件注入的提醒会把自己再触发一次（自激循环）。
  */
@@ -366,9 +366,14 @@ export function installTrigger(
     // 插件仓库里没有它的类型声明，写字面量会让 tsc 报找不到模块。
     const specifier = '@deepseek-ai/dsh-llm'
     const mod = await import(specifier) as { createUserMessage: (input: unknown) => unknown }
+    // 来源必须写成 `plugin:<name>`：会话格式 v4 退回了裸的 `kind: 'plugin'` + `plugin` 组合，
+    // 写入路径（codec 的 assertV4SourceRowAdmission）见到 kind === 'plugin' 会直接抛
+    // `format v4 message requires a producer-owned source kind`；而这里 inject() 没有被 await，
+    // 抛出会绕过下面的 try/catch 冒到 turn 上，UI 报「本轮运行失败」。
+    // `plugin:<name>` 也正是 v3→v4 迁移给本插件历史行推导出的 kind，两代读回同一形状。
     return mod.createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: 'dsh-knj-obsidian', form: 'notice', summary },
+      source: { kind: 'plugin:dsh-knj-obsidian', form: 'notice', summary },
     })
   })
 

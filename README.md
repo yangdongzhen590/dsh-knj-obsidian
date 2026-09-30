@@ -13,12 +13,70 @@ DSH（DeepSeek Harness）内简化版 Obsidian：为 AI agent 提供项目级知
 npm pack
 
 # 2. 在插件目录内执行：安装到 DSH 的 web profile
-dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.257.tgz
+dsh plugin --profile web add ./dsh-knj-obsidian-2026.9.301.tgz
 
 # 3. 重启 DSH，确认宿主日志无 dsh-knj-obsidian 相关报错
 ```
 
 安装后插件在 DSH 启动时自动向 agent 暴露工具（`wiki_ingest` / `wiki_capture` / `wiki_lint` / `wiki_query` / `wiki_export`），并随包分发 `wiki-query` skill，无需额外配置。
+
+### 兼容的 DSH 版本
+
+| 插件版本 | DSH 基线 | 说明 |
+|---|---|---|
+| `2026.9.201` 及更早 | `dsh-v0.1.1-rc.2` / `dsh-v0.1.2-rc.1` | peer 精确锁定 `0.1.2-rc.1`，在 `0.2.x` 宿主上会被安装前校验判定为不兼容 |
+| **`2026.9.301`** | `dsh-v0.1.2-rc.1` ~ **`dsh-v0.2.0-rc.2`** | peer 改为双基线声明并把 0.2 分支收口到实测版本；在 `0.2.0-rc.2` 上完成 typecheck、构建、客户端打包与 354 项测试验证，另加 peer 范围双解析模式检查 |
+
+`peerDependencies` 现在写作 **`^0.1.2-rc.1 || >=0.2.0-rc.1 <0.2.1-0`**。说明两件事：
+
+- **为什么要有 `>=0.2.0-rc.1` 这一支**：它的 `[major,minor,patch]` 是 `0.2.0` **且自带预发布**，这正是 npm/pnpm 默认解析器接受 `0.2.0-rc.2` 的条件。写成单范围 `>=0.1.2-rc.1 <0.2.1-0` 能过宿主的组装期校验（那里用 `includePrerelease: true`），却会让 `dsh plugin add` 报 **ERESOLVE**。
+- **为什么上界收口到 `<0.2.1-0`**：只声明实测过的 0.2 版本。`0.1.5 → 0.1.7` 曾一次性打断所有按 `0.1.5-alpha.1` 构建的插件，一路放行整个 0.2.x 是兑现不了的承诺；收口后若 0.2.1 出问题，会在组装期点名版本失败，而不是拖到运行期出现「不报错的怪症状」。
+- `npm run test:peers` 用「宿主 gate」与「npm 默认解析」两种模式逐个断言受管 peer，并自带 `--selftest` 已知行为自校准，防止上面的坑回来。
+
+侧边栏「知识库」标签依赖 **`dsh-better-sidebar`**（客户端 `dsh.client.inject: ["betterSidebar"]`）。
+它不在本包依赖里，需要作为 profile 的直接依赖单独安装，且版本要与宿主同基线：
+
+```bash
+dsh plugin --profile web add dsh-better-sidebar@^0.24.1
+```
+
+> **它是硬依赖，不是可选项。** 客户端 bundle 的 `inject` 里声明了 `betterSidebar`，而 DSH 的客户端引导在
+> 任何条目非 active 时都会直接抛错。缺它时的现场是：界面报 `Failed to load plugins`，控制台给出
+> `web boot: 1 entry did not activate` + `dsh-knj-obsidian: pending (waiting for service: betterSidebar)`——
+> 此时不只是「知识库」标签不出现，**整个客户端引导都会失败**。所以先装好 `dsh-better-sidebar` 再装本插件。
+> 客户端加载器没有「可选注入」语法（`dsh.client.inject` 只接受字符串数组），因此无法在插件侧软化为可选。
+
+### 从 Git 安装（`github:` 依赖）时的已知限制
+
+本仓库的 `.gitignore` 忽略 `lib/`，且 `scripts` 里没有 `prepare` / `prepublishOnly` 钩子，而
+`package.json` 的 `main` 指向 `lib/index.js`、`files` 又声明了 `lib`。结果是：**任何 `github:` 形式的安装
+（`npm i github:<owner>/dsh-knj-obsidian`、profile 里的 git 依赖）
+会得到一个没有入口文件的包**——插件随后加载失败，报错点与会看到的现象都不指向真正原因。
+
+建议维护者二选一（我们这边为了立刻可用，是在一个附加分支上提交构建产物）：
+
+1. 把 `lib/`（以及 `lib/types/`）移出 `.gitignore`，让仓库自带可运行产物；或
+2. 在 `scripts` 里加 `"prepare": "npm run build && npm run build:client"`。
+   注意 pnpm 11 默认会拦截依赖的构建脚本（`ERR_PNPM_IGNORED_BUILDS`），走这条路需要用户显式放行，
+   所以从「开箱即用」看第 1 种更稳。
+
+顺带一提：`npm publish` 也依赖同一份文件清单，没有 `prepublishOnly` 构建时同样会发出缺 `lib/` 的 tarball。
+
+### 本地开发
+
+```bash
+npm install        # 需要 @deepseek-ai/dsh-* 的 0.2.0-rc.2 typings
+npm run typecheck        # 宿主侧类型检查
+npm run check:client     # 客户端类型检查
+npm run build            # tsc → lib/
+npm run build:client     # tsdown → client/client.js
+npm test                 # 354 项测试（node --test）
+npm run test:peers       # peer 范围双解析模式检查（含 --selftest 自校准）
+npm run verify           # 以上全部
+```
+
+> `@tobilu/qmd` 是**可选 peer**（语义检索用）。未安装时 `wiki_search_semantic` 走「未就绪」分支，
+> 且 `semantic-index.test.mjs` 中依赖真实库的那条用例会自动跳过（不再误报失败）。
 
 ## v1 能力
 

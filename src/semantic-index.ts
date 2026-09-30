@@ -369,7 +369,11 @@ export async function createSemanticRuntime(opts: CreateRuntimeOptions): Promise
       // 并把「本地模型 + 禁用位」写进进程环境——见 applyOfflineModelEnv 的原因说明。
       if (!process.env.XDG_CACHE_HOME) process.env.XDG_CACHE_HOME = join(home, '.dsh')
       applyOfflineModelEnv(models)
-      const mod = await import('@tobilu/qmd') as unknown as { createStore: (o: { dbPath: string; config: unknown }) => Promise<SemanticStore> }
+      // 变量说明符：@tobilu/qmd 是「可选 peer」（autoInstallPeers:false 下不随插件安装），
+      // 插件仓库里没有它的类型声明，写字面量会让 tsc 报 TS2307 —— 与 trigger.ts 里
+      // 加载宿主 @deepseek-ai/dsh-llm 的写法保持一致：运行时按需解析，缺失由下面的 catch 兜底。
+      const qmdSpecifier = '@tobilu/qmd'
+      const mod = await import(qmdSpecifier) as unknown as { createStore: (o: { dbPath: string; config: unknown }) => Promise<SemanticStore> }
       store = await mod.createStore({
         dbPath: paths.dbPath,
         config: {
