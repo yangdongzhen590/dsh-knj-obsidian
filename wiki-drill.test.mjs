@@ -89,6 +89,45 @@ test('模式 A：语义种子 + 词面命中按名次融合，双通道命中者
   assert.ok(res.strategy.includes('semantic'), `strategy 应标注语义通道，实际 ${res.strategy}`)
 })
 
+// ---------------------------------------------------------------------------
+// 2026-10-17：不变量 R1 —— 融合名次不得被度/tier 翻转（度只做平局裁决）。
+//
+// 原实现的种子分是 `rrf × (1 + 度加权) × tier权重`：乘数摆动 ~13% 而 RRF 带宽只有 ~9%，
+// 连接度必然压过相关性。真实库实测（10 条改写式查询）：纯 RRF 排序 Top1 3/10，
+// 乘上度/tier 后掉到 2/10——最刺眼的一例里 RRF 已把期望页排在第 1，被换成度数最高的枢纽页。
+// 机制与证据：.wiki/concepts/语义融合会顶掉正确的词面-top1.md
+// ---------------------------------------------------------------------------
+
+test('回归：种子排序不得被度/tier 翻转（RRF 名次优先，枢纽页不得霸榜）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  // 语义通道自己的名次：rank1 = peripheral 且零链接；rank2 = core 且 6 条入链（度高）
+  page(store, 'sem-rank-first', { title: '语义第一名', tier: 'peripheral' })
+  page(store, 'hub-page', { title: '枢纽页', tier: 'core' })
+  for (const i of [1, 2, 3, 4, 5, 6]) page(store, `linker-${i}`, { title: `引用页${i}`, body: '链到 [[hub-page]]。' })
+
+  // 查询刻意与全库无字面重合 ⇒ 词面通道为空，种子的名次完全由语义通道给出
+  const res = await drillQuery(store, 'zzz qqq 与库内无字面交集的句子', {
+    semantic: {
+      name: 'fake',
+      async search() {
+        return [
+          { id: 'sem-rank-first', category: 'concepts' },
+          { id: 'hub-page', category: 'concepts' },
+        ]
+      },
+    },
+    semanticStatus: 'ready',
+    limit: 5,
+  })
+
+  const ids = res.seeds.map((s) => s.id)
+  assert.ok(ids.includes('sem-rank-first') && ids.includes('hub-page'), '两个语义命中都要在种子里')
+  assert.equal(res.seeds[0].id, 'sem-rank-first',
+    '语义通道排第 1 的页必须是第 1 个种子——哪怕它 peripheral、零链接、而第 2 名是 core 高度数的枢纽页')
+  assert.equal(res.seeds[1].id, 'hub-page', '枢纽页按语义名次排第 2，不得越到第 1')
+})
+
 test('模式 A：种子只附带一跳邻居，绝不带两跳', async (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))

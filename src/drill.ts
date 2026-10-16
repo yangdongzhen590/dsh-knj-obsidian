@@ -341,10 +341,23 @@ export async function drillQuery(
       const page = candidate ? undefined : (meta ? store.readPage(d.id, meta.category) : undefined)
       const tier = normalizeTier(candidate?.tier ?? page?.tier)
       const degree = adj.degree.get(d.id) ?? 0
-      return { draft: d, candidate, page, meta, tier, degree, score: d.rrf * (1 + degreeBonus(degree)) * tierWeight(tier) }
+      // 分值 = 纯 RRF 融合分（与 wiki_search_semantic 的 results[].score 同一口径，可直接比较）。
+      //
+      // 不变量 R1（2026-10-17 定）：**融合名次不得被度/tier 翻转；度只做平局裁决**。
+      // 原实现是 `rrf × (1 + 度加权) × tier权重`——乘数跨页摆动可达 2.3×–2.6×（约 13%），
+      // 而 RRF(K=60) 的相关性带宽只有 ~9%（实测 0.0301–0.0328），**乘数比信号还宽 ⇒ 连接度
+      // 必然决定第一名**。实测最刺眼一例：查询「宿主的钩子和事件回调长什么样」，纯 RRF 已把
+      // 期望页 dsh-插件宿主接口契约排在第 1，度/tier 乘数把它换成枢纽页，Top1 精度 3/10 → 2/10。
+      // 同类缺陷在 retriever.ts 已修（见 SEMANTIC_RANK_BASE 的注释），本处同源同修。
+      // 证据与机制：.wiki/concepts/语义融合会顶掉正确的词面-top1.md
+      return { draft: d, candidate, page, meta, tier, degree, score: d.rrf }
     })
     .filter((s) => s.candidate || s.page)
-    .sort((a, b) => (b.score - a.score) || ((order.get(a.draft.id) ?? 0) - (order.get(b.draft.id) ?? 0)))
+    // 主序 = RRF 降序（相关性）；完全平局（两通道名次互换的经典平局：1/61+1/62 == 1/62+1/61）
+    // 才轮到度做裁决；最后按融合插入序保持稳定。tier 只展示、不参与排序。
+    .sort((a, b) => (b.draft.rrf - a.draft.rrf)
+      || (b.degree - a.degree)
+      || ((order.get(a.draft.id) ?? 0) - (order.get(b.draft.id) ?? 0)))
 
   const truncatedSeeds = scored.length > seedLimit
   let truncatedNeighbors = false
