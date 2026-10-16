@@ -450,7 +450,9 @@ export function drillPage(store: VaultStore, id: string, opts: DrillPageOptions 
     seeds,
     totalPages: pages.length,
     ...(truncatedNeighbors ? { truncated: { seeds: false, neighbors: true } } : {}),
-    message: empty ? '该页在库内没有任何双链（可能是孤儿页）：没有出链也没有入链可下钻。' : undefined,
+    // 条件展开而非 message: undefined —— 宿主网关的 isJsonValue 把 undefined 判为非法 JSON 值，
+    // 整条工具输出会被拒（value is not lossless JSON）。无话可说时字段必须「不存在」。
+    ...(empty ? { message: '该页在库内没有任何双链（可能是孤儿页）：没有出链也没有入链可下钻。' } : {}),
   }
 }
 

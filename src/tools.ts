@@ -18,11 +18,11 @@ import { relatedHits } from './related-check.ts'
 import { createCheckpoint, listCheckpoints } from './checkpoint.ts'
 import { rebuildIndex } from './index-builder.ts'
 import {
-  createSemanticRuntime, runOfflineSearch, notReadyMessage, resolveStateHome, DEFAULT_MODEL_FILENAME,
+  createSemanticRuntime, runOfflineSearch, notReadyMessage, resolveStateHome, DEFAULT_MODEL_FILENAME, collectionIdOf,
   type SemanticHit, type SemanticRuntime,
 } from './semantic-index.ts'
 import {
-  semanticFallbackEnabled, semanticRuntimeFor, disposeSemanticRuntimes, workspaceNameOf,
+  semanticFallbackEnabled, semanticRuntimeFor, semanticRuntimeError, disposeSemanticRuntimes, workspaceNameOf,
   clampLimit, semanticRawHits, type SemanticRuntimeFactory,
 } from './semantic-hits.ts'
 import { refresherFor, vaultRootOf } from './semantic-refresh.ts'
@@ -152,7 +152,16 @@ function currentReadonlyStore(provider: VaultProvider): VaultStore {
   return provider.current() as VaultStore
 }
 
-/** wiki_query 的语义兜底阈值：词面候选少于该数时才启用语义层（省算力——嵌入调用只在词面几乎无果时发生）。 */
+/**
+ * wiki_query 的语义兜底阈值：词面候选少于该数时才启用语义层（省算力——嵌入调用只在词面几乎无果时发生）。
+ *
+ * **不要再放宽这道门。** 2026-10-17 实测否掉了「Top1 分低也兜底」的改法（证据见
+ * `.wiki/concepts/语义融合会顶掉正确的词面-top1.md`）：10 条改写式查询上，纯词面 Top1 命中 6/10，
+ * 加上「Top1 < 4 也兜底」后掉到 4/10（2 个退步、0 个改进），平均耗时 5ms → 1791ms。
+ * 机制是**结构性**的而非噪声：`MATCH_SCORE.semantic`(3) 无条件高于 body(1)/summary(2)/graph(0.5)，
+ * 而「Top1 < 4」恰好等价于「Top1 来自 body/summary/graph」——新门一开，语义候选必然压过
+ * 那个（正确的）弱 Top1。要改进召回，该修的是语义融合的打分（见同一知识页），不是这道门。
+ */
 export const SEMANTIC_FALLBACK_MIN_CANDIDATES = 2
 
 export interface MountToolsOptions {
@@ -757,6 +766,8 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       const wordFace = retrieve(store, args.query, { mode, maxCandidates })
       // index-only 是「只读 index.md」的快速路径契约，不掺语义层；
       // 词面候选够多时也不打扰语义层（嵌入调用只在词面几乎无果时发生）。
+      // 这道门**只有候选数一个条件**：2026-10-17 实测证明再叠一条「Top1 分低也兜底」会让 Top1 精度
+      // 从 6/10 掉到 4/10（机制见 SEMANTIC_FALLBACK_MIN_CANDIDATES 的注释），不要加回来。
       if (mode === 'index-only' || wordFace.candidates.length >= SEMANTIC_FALLBACK_MIN_CANDIDATES) {
         recordMissIfEmpty(wordFace, args.query, mode, false)
         return wordFace
@@ -1149,9 +1160,22 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       const limit = clampLimit(args.limit)
       const store = currentReadonlyStore(provider)
       const vaultRoot = provider.currentRecord()?.root ?? join(store.wikiRoot, '..')
-      const runtime = await createSemanticRuntime({ vaultRoot })
+      // 复用按库缓存的语义运行时（与 wiki_query 的兜底、wiki_drill 同一条缓存）：
+      // 旧实现在这里**每次调用**自建 store 再 close，等于每次都重新加载 300M 嵌入模型
+      // —— 2026-10-17 实测 7–10 秒/次，而缓存路径首次之后只要 28–83ms（差 100 倍以上）。
+      // 注意这**不受 KNJ_OBSIDIAN_SEMANTIC_FALLBACK 影响**：那个开关关的是「兜底」，
+      // 本工具是用户显式要求的语义检索，必须照常可用（与 wiki_drill 的开关口径一致）。
+      const runtime = await semanticRuntimeFor(vaultRoot, runtimeFactory)
 
       // 严格离线：模型缺失时只给可执行信息，不联网、不报错
+      // 缓存路径可能返回 null（工厂抛错）——这类失败没有 runtime.loadError，
+      // 原因由 semanticRuntimeError 单独记着，照样如实带出，不退回「猜一个原因」。
+      if (!runtime) {
+        return {
+          status: 'library-missing' as const, limit, count: 0, results: [],
+          message: notReadyMessage('library-missing', undefined, undefined, semanticRuntimeError(vaultRoot)),
+        }
+      }
       if (!runtime.modelPresent) {
         const paths = resolveStateHome()
         return {
@@ -1162,7 +1186,7 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       if (!runtime.store) {
         return {
           status: 'library-missing' as const, limit, count: 0, results: [],
-          message: notReadyMessage('library-missing'),
+          message: notReadyMessage('library-missing', undefined, undefined, runtime.loadError),
         }
       }
 
@@ -1177,20 +1201,19 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       // 严格离线：只用「本地嵌入模型向量通道 + BM25 关键词通道」并在本地融合。
       // 刻意不调用 store.search()——QMD 的混合检索会拉起查询扩展(1.7B)与精排(0.6B)两个云端模型，
       // 缺失时 node-llama-cpp 会自动去 HuggingFace 下载，与「绝不联网」冲突。
-      try {
-        const outcome = await runOfflineSearch(semantic, args.query, limit)
-        const staleNote = runtime.status === 'index-stale'
-          ? `索引有 ${runtime.index.pendingEmbedding} 篇未嵌入（结果可能不含最新页）：建议点「更新索引」或在边栏查看语义索引状态。`
-          : ''
-        const note = [outcome.degraded, staleNote].filter(Boolean).join('；')
-        return {
-          status: runtime.status, limit, count: outcome.results.length, results: outcome.results,
-          ...(runtime.status === 'index-stale' ? { stale: true } : {}),
-          ...(note ? { message: note } : {}),
-        }
-      } finally {
-        // 每次调用自建的 store 用完即关：不留 sqlite 句柄（索引文件在 ~/.dsh/qmd 下）
-        try { await semantic.close?.() } catch { /* 关闭失败不影响检索结果 */ }
+      //
+      // 这里**不能**再 close store：运行时是按库缓存、与其它消费者共用的，
+      // 关掉它会让后续调用（含 wiki_drill 与触发层）拿到失效句柄。句柄由
+      // disposeSemanticRuntimes() 在插件卸载时统一释放。
+      const outcome = await runOfflineSearch(semantic, args.query, limit, collectionIdOf(vaultRoot))
+      const staleNote = runtime.status === 'index-stale'
+        ? `索引有 ${runtime.index.pendingEmbedding} 篇未嵌入（结果可能不含最新页）：建议点「更新索引」或在边栏查看语义索引状态。`
+        : ''
+      const note = [outcome.degraded, staleNote].filter(Boolean).join('；')
+      return {
+        status: runtime.status, limit, count: outcome.results.length, results: outcome.results,
+        ...(runtime.status === 'index-stale' ? { stale: true } : {}),
+        ...(note ? { message: note } : {}),
       }
     },
   }))
@@ -1226,7 +1249,8 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       name: 'qmd-offline',
       async search(query, searchOpts) {
         // 严格离线：只用本地向量 + BM25 两通道并在本地融合，绝不调 store.search()（会拉起云端模型）
-        const outcome = await runOfflineSearch(qmd, query, searchOpts?.limit ?? 5)
+        // 限定本库 collection：否则下钻会种进别库的页（见 runOfflineSearch）。
+        const outcome = await runOfflineSearch(qmd, query, searchOpts?.limit ?? 5, collectionIdOf(vaultRoot))
         if (outcome.degraded) holder.degraded = outcome.degraded
         return outcome.results.map((r) => ({ id: r.id, category: r.category as WikiCategory, snippet: r.snippet }))
       },

@@ -11,7 +11,7 @@
 // 只读：检索路径不建 collection、不触发索引、不下载模型。
 import { basename } from 'node:path'
 import {
-  createSemanticRuntime, clampLimit, runOfflineSearch,
+  createSemanticRuntime, clampLimit, runOfflineSearch, collectionIdOf,
   type SemanticHit, type SemanticRuntime,
 } from './semantic-index.ts'
 import type { SemanticPageHit } from './retriever.ts'
@@ -32,26 +32,85 @@ export type SemanticRuntimeFactory = (root: string) => Promise<SemanticRuntime>
 export const defaultSemanticRuntimeFactory: SemanticRuntimeFactory =
   (root) => createSemanticRuntime({ vaultRoot: root })
 
-/** 按库根缓存的语义运行时（进程级；模型只加载一次）。 */
-const semanticRuntimes = new Map<string, Promise<SemanticRuntime | null>>()
+/**
+ * 失败结论的复用窗口（毫秒）。窗口内复用同一次失败，窗外允许重试。
+ *
+ * 为什么需要这个窗口：**失败不是永久事实**。模型文件是用户手动放进 `<home>/.dsh/qmd/models`
+ * 的、sqlite 句柄占用是瞬时的——而 `notReadyMessage('model-missing')` 对用户明确承诺过
+ * 「放好后无需重启，再次检索即可自动加载」。旧实现把失败（含 `store: null`）也按库根**永久**缓存，
+ * 这句承诺在 wiki_drill 与触发层（走按库缓存）上直接失效：一次瞬时失败 = 该进程内语义层全废，
+ * 只有重启能恢复——这正是 2026-10-15 事故里「界面报 0 篇、重启就好了」的机制。
+ *
+ * 为什么不是「完全不缓存失败」：那会让每个回合都重试一次。窗口把重试成本压到每 30 秒最多一次，
+ * 同时保住并发单飞（pending 期间一律复用同一个 Promise，绝不并发拉起两次模型）。
+ * 环境变量 `KNJ_OBSIDIAN_SEMANTIC_RETRY_MS` 可覆盖（测试用它把窗口压到 0）。
+ */
+export const SEMANTIC_FAILURE_RETRY_MS = 30_000
+
+function failureRetryMs(): number {
+  const raw = Number(process.env.KNJ_OBSIDIAN_SEMANTIC_RETRY_MS)
+  return Number.isFinite(raw) && raw >= 0 ? raw : SEMANTIC_FAILURE_RETRY_MS
+}
+
+interface SemanticRuntimeEntry {
+  promise: Promise<SemanticRuntime | null>
+  /** 还在加载中：期间一律复用（并发单飞，绝不并发拉起两次模型）。 */
+  pending: boolean
+  /** 拿到了可用的 store ⇒ 永久复用；否则只复用冷却窗内的结论。 */
+  usable: boolean
+  /** 结论落地时刻（冷窗判断基准）。 */
+  settledAt: number
+}
+
+/** 按库根缓存的语义运行时（进程级；可用的模型只加载一次）。 */
+const semanticRuntimes = new Map<string, SemanticRuntimeEntry>()
 /** 已解析完成的运行时（同步可读的「热」判据源）。 */
 const warmRuntimes = new Map<string, SemanticRuntime | null>()
+/**
+ * 工厂**抛错**时的真实原因（按库根记录）。
+ * 为什么需要：工厂抛错这条路会把运行时降级成 null，而 null 上没有 loadError——
+ * 报给用户的就只剩「猜一个原因」（见 SemanticRuntime.loadError 的说明）。
+ * 正常的工厂（createSemanticRuntime）**从不抛错**（它内部兜住并返回带 loadError 的运行时），
+ * 所以这张表只为注入式工厂与异常路径服务。
+ */
+const runtimeFactoryErrors = new Map<string, string>()
 
-/** 取（或惰性创建）某库的语义运行时；失败缓存为 null，绝不抛出。 */
+/** 取某库最近一次工厂抛错的原因（诊断用；成功或从未尝试则为 undefined）。 */
+export function semanticRuntimeError(vaultRoot: string): string | undefined {
+  return runtimeFactoryErrors.get(vaultRoot)
+}
+
+/** 取（或惰性创建）某库的语义运行时；失败绝不抛出。可用则永久复用，失败只复用冷却窗。 */
 export function semanticRuntimeFor(
   vaultRoot: string,
   factory: SemanticRuntimeFactory = defaultSemanticRuntimeFactory,
 ): Promise<SemanticRuntime | null> {
   const cached = semanticRuntimes.get(vaultRoot)
-  if (cached) return cached
-  const created = factory(vaultRoot)
-    .catch(() => null)
+  if (cached && (cached.pending || cached.usable || Date.now() - cached.settledAt < failureRetryMs())) {
+    return cached.promise
+  }
+  const entry: SemanticRuntimeEntry = {
+    promise: Promise.resolve(null),
+    pending: true,
+    usable: false,
+    settledAt: Date.now(),
+  }
+  entry.promise = factory(vaultRoot)
+    .catch((error) => {
+      runtimeFactoryErrors.set(vaultRoot, error instanceof Error ? `${error.name}: ${error.message}` : String(error))
+      return null
+    })
     .then((runtime) => {
+      entry.pending = false
+      // 「可用」的判据是拿到了 store：模型缺失 / 库加载失败都算未就绪，必须允许之后再试。
+      entry.usable = runtime?.store != null
+      entry.settledAt = Date.now()
+      if (entry.usable) runtimeFactoryErrors.delete(vaultRoot)
       warmRuntimes.set(vaultRoot, runtime)
       return runtime
     })
-  semanticRuntimes.set(vaultRoot, created)
-  return created
+  semanticRuntimes.set(vaultRoot, entry)
+  return entry.promise
 }
 
 /**
@@ -64,8 +123,8 @@ export function warmSemanticRuntime(vaultRoot: string): SemanticRuntime | null {
 
 /** 关闭并清空所有缓存的语义运行时（插件 dispose 时调用，避免 sqlite 句柄与模型常驻）。 */
 export function disposeSemanticRuntimes(): void {
-  for (const pending of semanticRuntimes.values()) {
-    void pending.then((runtime) => { try { runtime?.store?.close?.() } catch { /* 关闭失败不影响退出 */ } })
+  for (const entry of semanticRuntimes.values()) {
+    void entry.promise.then((runtime) => { try { runtime?.store?.close?.() } catch { /* 关闭失败不影响退出 */ } })
   }
   semanticRuntimes.clear()
   warmRuntimes.clear()
@@ -87,21 +146,24 @@ export interface SemanticHitsRequest {
 export async function semanticRawHits(request: SemanticHitsRequest): Promise<SemanticHit[]> {
   if (!semanticFallbackEnabled()) return []
   const limit = clampLimit(request.limit)
+  // 检索必须限定到本库的 collection：索引库全局共享，不限定会返回别库页面（详见 runOfflineSearch）。
+  const collection = collectionIdOf(request.vaultRoot)
   if (request.requireWarm) {
     const warm = warmSemanticRuntime(request.vaultRoot)
-    return warm?.store ? searchWarm(warm.store, request.query, limit) : []
+    return warm?.store ? searchWarm(warm.store, request.query, limit, collection) : []
   }
   const runtime = await semanticRuntimeFor(request.vaultRoot, request.factory ?? defaultSemanticRuntimeFactory)
-  return runtime?.store ? searchWarm(runtime.store, request.query, limit) : []
+  return runtime?.store ? searchWarm(runtime.store, request.query, limit, collection) : []
 }
 
 async function searchWarm(
   store: NonNullable<SemanticRuntime['store']>,
   query: string,
   limit: number,
+  collection: string,
 ): Promise<SemanticHit[]> {
   try {
-    const outcome = await runOfflineSearch(store, query, limit)
+    const outcome = await runOfflineSearch(store, query, limit, collection)
     return outcome.results
   } catch {
     return []

@@ -386,3 +386,65 @@ test('工具层输出通过宿主 schema 校验（validateJsonSchemaValue）', a
   validateJsonSchemaValue(pageRead.output.schema, await pageRead.execute({ id: 'nope' }), 'wiki_read')
 })
 
+// ---------- 回归：undefined 是非法 JSON 值 ----------
+//
+// 为什么单列：宿主工具网关（@deepseek-ai/dsh-util-values 的 isJsonValue）把 undefined
+// 判为非法 JSON 值，**整条工具输出被拒**，模型只看到 "value is not lossless JSON"。
+// 症状极隐蔽——lib 层断言 message 文案的用例全绿，schema 校验也过（undefined ≠ 类型错误），
+// 只有真跑工具网关才炸。防线：输出里出现 undefined 就必须当场失败。
+
+/** 深度找 undefined 值（对象自有键 / 数组元素），并给出路径便于定位 */
+function findUndefined(value, path = '$') {
+  if (value === undefined) return path
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const hit = findUndefined(value[i], `${path}[${i}]`)
+      if (hit) return hit
+    }
+    return null
+  }
+  if (value && typeof value === 'object') {
+    for (const k of Object.keys(value)) {
+      const hit = findUndefined(value[k], `${path}.${k}`)
+      if (hit) return hit
+    }
+  }
+  return null
+}
+
+test('回归：模式 B 有双链的页不得输出 message: undefined（网关会整条拒绝）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  // lonely：既无出链也无入链 ⇒ 走「有话说」分支（message 是真字符串）
+  // linked：有双链 ⇒ 走「无话说」分支，正是线上翻车路径（原先这里塞了 undefined）
+  page(store, 'lonely', { title: '孤立页' })
+  page(store, 'linked', { title: '有链页', body: '链到 [[friend]]' })
+  page(store, 'friend', { title: '友页' })
+  const { byName } = mount(store)
+
+  process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK = 'off'
+  t.after(() => { delete process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK })
+  const drill = byName('wiki_drill')
+
+  // 有话可说的分支（孤立页）：message 必须真的在，且是字符串
+  const orphan = await drill.execute({ page: 'lonely' })
+  assert.equal(orphan.strategy, 'graph-neighbor:both')
+  assert.equal(orphan.seeds[0].neighbors.length, 0)
+  assert.equal(typeof orphan.message, 'string')
+  assert.match(orphan.message, /无库内双链|孤儿/)
+  assert.equal(findUndefined(orphan), null, `输出含 undefined：${findUndefined(orphan)}`)
+
+  // 无话可说的分支（有双链的页）：字段必须「不存在」，绝不是值为 undefined。
+  // 这正是线上翻车的那条路径：有双链 → 三元走 else 分支 → undefined 混进输出。
+  const normal = await drill.execute({ page: 'linked' })
+  assert.ok(normal.seeds[0].neighbors.some((n) => n.id === 'friend'), '有双链页必须带出一跳邻居')
+  assert.equal('message' in normal, false, 'message 字段不得存在（值为 undefined 会被网关拒绝）')
+  assert.equal(findUndefined(normal), null, `输出含 undefined：${findUndefined(normal)}`)
+
+  // 全路径无 undefined：每个输出都要能无损过 JSON 往返（网关的同款判定）
+  for (const out of [orphan, normal, await drill.execute({ page: 'ghost-id' }), await drill.execute({})]) {
+    assert.equal(findUndefined(out), null, `输出含 undefined：${findUndefined(out)}`)
+    assert.deepEqual(JSON.parse(JSON.stringify(out)), out, '必须能无损 JSON 往返')
+  }
+})
+

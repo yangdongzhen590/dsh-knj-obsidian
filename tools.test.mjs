@@ -544,6 +544,80 @@ test('语义兜底开关 KNJ_OBSIDIAN_SEMANTIC_FALLBACK=off 时不得触碰语�
 })
 
 // ---------------------------------------------------------------------------
+// 2026-10-17：**不要再放宽兜底门**（这条守住一次被实测否掉的「改进」）。
+//
+// 曾经试过再加一道门：「Top1 低于标签层基础分（4）时也启用语义兜底」，理由是「有结果 ≠ 结果对」。
+// 在 10 条改写式查询上实测（全部走真实工具层）：
+//   纯词面          Top1 命中 6/10，平均 5ms
+//   词面+语义兜底    Top1 命中 4/10，平均 1791ms   ← 2 个退步、0 个改进
+// 机制是结构性的：MATCH_SCORE.semantic(3) 无条件高于 body(1)/summary(2)/graph(0.5)，
+// 而「Top1 < 4」恰好等价于「Top1 来自 body/summary/graph」——新门一开，语义候选必然压过
+// 那个正确的弱 Top1。更糟的是 retrieve() 丢掉了语义通道自身的排序（扁平 base=3），
+// 度加权与 tier 权重会把语义通道里排最后的 hub 页顶成 Top1（实测：语义通道排第 5 的页成了融合后 Top1）。
+// 所以兜底只在「词面几乎无果」时发生，这条用例把该行为钉住。
+// ---------------------------------------------------------------------------
+
+test('wiki_query：候选 ≥ 2 时不得启用语义兜底 —— 即使 Top1 是弱命中（实测放宽会掉精度）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  // 两页都只在**正文**里含这些词（标题/标签都不含）⇒ 命中落在 body 层，分数 < 4，即「弱 Top1」
+  const body = 'alpha beta gamma 只是正文里的占位词，标题与标签都没有它。'
+  store.writePage({ id: 'prose-a', title: '页面甲', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body })
+  store.writePage({ id: 'prose-b', title: '页面乙', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body })
+
+  let called = 0
+  const def = mountWithSemantic(store, dir, async () => { called += 1; return fakeSemanticRuntime() })
+
+  const res = await def.execute({ query: 'alpha beta gamma delta epsilon' }, EXEC)
+
+  assert.ok(res.candidates.length >= 2, `前置：词面候选必须 ≥ 2。实际 ${res.candidates.length}`)
+  assert.ok(res.candidates[0].score < 4, `前置：Top1 必须是弱命中（< 4）。实际 ${res.candidates[0].score}`)
+  assert.equal(called, 0, '候选够多就不该碰语义层——哪怕 Top1 分低（放宽这道门实测会让 Top1 精度 6/10 → 4/10）')
+  assert.ok(!res.strategy.includes('semantic'))
+})
+
+test('wiki_search_semantic：复用按库缓存的运行时，不每次重建（旧实现每次重载 300M 模型 ≈ 7–10 秒）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.writePage({ id: 'rate-limiting', title: '限流页', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '429 要指数退避。' })
+
+  let created = 0
+  let closed = 0
+  const registered = []
+  mountTools(
+    { tools: { register: (def) => registered.push(def) } },
+    { current: () => store, currentRecord: () => ({ root: dir }) },
+    {
+      semanticRuntimeFactory: async () => {
+        created += 1
+        const rt = fakeSemanticRuntime()
+        return { ...rt, store: { ...rt.store, close: () => { closed += 1 } } }
+      },
+    },
+  )
+  const def = registered.find((d) => d.name === 'wiki_search_semantic')
+
+  const r1 = await def.execute({ query: '第一次', limit: 5 }, EXEC)
+  const r2 = await def.execute({ query: '第二次', limit: 5 }, EXEC)
+  assert.equal(r1.status, 'ready')
+  assert.equal(r2.status, 'ready')
+  assert.ok(r1.count >= 1 && r2.count >= 1, '两次调用都要给出结果')
+  assert.equal(created, 1, '第二次调用必须复用缓存运行时——自建就等于重载 300M 嵌入模型（实测 7–10 秒/次）')
+  assert.equal(closed, 0, '缓存运行时不得被关掉：wiki_drill 与触发层共用同一个实例')
+
+  // 开关关的是「兜底」，不是用户显式要求的语义检索（与 wiki_drill 的开关口径一致）
+  const saved = process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK
+  process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK = 'off'
+  t.after(() => {
+    if (saved === undefined) delete process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK
+    else process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK = saved
+  })
+  const r3 = await def.execute({ query: '第三次', limit: 5 }, EXEC)
+  assert.equal(r3.status, 'ready', 'KNJ_OBSIDIAN_SEMANTIC_FALLBACK=off 只关兜底，不得关掉显式语义检索')
+  assert.equal(created, 1, '关掉兜底后仍复用缓存')
+})
+
+// ---------------------------------------------------------------------------
 // 2026-09-20：检索未命中日志的**接线**验证。
 // 上面 miss-log.test.mjs 只测了 recordQueryMiss 本身；本组测的是 wiki_query 真的会调它，
 // 且不会因此往 vault 里写东西（"检索只读"是公开契约）。

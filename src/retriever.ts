@@ -12,19 +12,44 @@ export const RETRIEVAL_CATEGORIES: readonly WikiCategory[] = ['concepts', 'entit
 /**
  * 基础匹配分。10/6/4/2 四项与上游 obsidian-wiki 的 graphrag 打分逐项对齐
  * （精确标题 / 标题 / 标签 / 摘要），使两套检索引擎对同一个库给出方向一致的排序。
- * index/semantic/body/graph 是本地扩展：上游 graph-query 压根不读正文，没有正文与
+ * index/body/graph 是本地扩展：上游 graph-query 压根不读正文，没有正文与
  * 图谱层，故这三项取较低的基础分，保证既有「前置层优先」语义在分数上也可读。
+ *
+ * **语义层不在这张表里**：它的分值由 SEMANTIC_RANK_BASE 按通道内名次给出
+ * （曾经这里是 `semantic: 3` 的扁平常数，实测会把正确的词面 Top1 顶掉，已移除）。
  */
 export const MATCH_SCORE = {
   exactTitle: 10,
   title: 6,
   tag: 4,
-  semantic: 3,
   summary: 2,
   index: 2,
   body: 1,
   graph: 0.5,
 } as const
+
+/**
+ * 语义层的分值基准：**只由语义通道自身的名次决定**（第 1 名 = 该值，第 n 名 = 该值 / n）。
+ *
+ * 这里原先是 `MATCH_SCORE.semantic = 3`（一个扁平常数，整层高于 body/summary/graph），
+ * 2026-10-17 实测证明那样会**把正确的词面 Top1 顶掉**，故改为按名次递减且整层垫底：
+ *
+ * 1. **扁平 base 丢掉了通道内的名次**。案例：语义通道自己把期望页排第 1、把另一页排第 5（最低），
+ *    融合后第 5 名成了 Top1——通道内的相关性排序被完全丢弃。
+ * 2. **度加权（最高 +2）与 tier 权重（×1.3）又用「连接度」覆盖了「语义相关性」**，
+ *    于是 hub/core 页稳定压过语义上更相关的页。
+ * 3. 这两点叠加的后果是 `wiki_query` 可能比纯词面**更差**（实测 Top1 精度 6/10 → 4/10）。
+ *
+ * 因此语义只补召回，不参与词面之上的排序：基准 0.3 严格小于词面最低层
+ * （graph 层、零度、peripheral tier = 0.5 × 0.7 = 0.35），名次越高分越低，
+ * 且**不乘 tier 权重、不加度加权**——否则相邻名次会被 ±30% 的 tier 权重翻转。
+ */
+export const SEMANTIC_RANK_BASE = 0.3
+
+/** 第 rank 名（从 1 开始）的语义候选分值：严格递减，恒 < 0.35。 */
+function semanticScore(rank: number): number {
+  return SEMANTIC_RANK_BASE / Math.max(1, rank)
+}
 
 /** tier 权重（与上游一致）：core 1.3 / supporting 1.0 / peripheral 0.7。 */
 export const TIER_WEIGHT: Record<WikiTier, number> = { core: 1.3, supporting: 1, peripheral: 0.7 }
@@ -32,6 +57,8 @@ export const TIER_WEIGHT: Record<WikiTier, number> = { core: 1.3, supporting: 1,
 /** 度加权：min(度 × 0.1, 2)，度 = 出链 + 入链（与上游 degree bonus 同式）。 */
 const DEGREE_STEP = 0.1
 const MAX_DEGREE_BONUS = 2
+/** 空度表：语义候选刻意不做度加权（否则 hub 页会用连接度覆盖语义相关性）。 */
+const NO_DEGREE: Map<string, number> = new Map()
 
 export interface RetrievalCandidate {
   page: string
@@ -353,9 +380,19 @@ function semanticCandidates(
     if (!known.has(key)) continue // 库内不存在的页面（含越界路径）直接丢弃
     const page = store.readPage(hit.id, hit.category)
     if (!page) continue
-    out.push(candidate({ id: hit.id, category: hit.category, page }, 'semantic', MATCH_SCORE.semantic, degree, hit.snippet))
+    out.push(semanticCandidate({ id: hit.id, category: hit.category, page }, out.length + 1, hit.snippet))
   }
   return out
+}
+
+/**
+ * 语义候选：**分值只由语义通道名次决定**，与 tier、度无关（原因见 SEMANTIC_RANK_BASE）。
+ * 借用 candidate() 组装其余字段（page/title/tier/source/snippet 的口径与其它层一致），
+ * 只把分值替换成名次分——这是「语义层不参与词面之上排序」的实现点。
+ */
+function semanticCandidate(e: PageEntry, rank: number, snippetOverride?: string): RetrievalCandidate {
+  const base = candidate(e, 'semantic', 0, NO_DEGREE, snippetOverride)
+  return { ...base, score: semanticScore(rank) }
 }
 
 /**

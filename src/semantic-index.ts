@@ -34,9 +34,18 @@ export function findModel(home: string = homedir(), filename: string = DEFAULT_M
   return existsSync(path) ? path : undefined
 }
 
+/**
+ * vaultRoot → QMD collection id。
+ * **建索引与检索必须同源同名**：改名会让既有索引全部失配（检索限定不到 collection 就退化成不限定）。
+ * 表达式与历史实现逐字一致，只做「抽出来复用」这一件事。
+ */
+export function collectionIdOf(vaultRoot: string): string {
+  return `${vaultRoot.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'vault'}-wiki`
+}
+
 /** 每个库一个集合：path = <vault>/.wiki，pattern 只匹配七个正式分类。 */
 export function buildCollectionConfig(vaultRoot: string, collectionId?: string) {
-  const id = collectionId ?? `${vaultRoot.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'vault'}-wiki`
+  const id = collectionId ?? collectionIdOf(vaultRoot)
   return {
     collections: {
       [id]: {
@@ -124,11 +133,57 @@ export function recordKey(record: Record<string, unknown>): string {
  * 结果整形：只保留有界字段；id/category 由路径推导（非正式分类/非 .md 一律丢弃）；
  * 标题优先取 frontmatter title；score 缺失时保持 undefined（不编造）。
  */
-export function shapeSearchResults(raw: ReadonlyArray<Record<string, unknown>>, limit: number): SemanticHit[] {
+/**
+ * 命中记录自报的 collection 名。
+ * 实测（2026-10-15 探针）QMD 单库命中都带 `collectionName`（如
+ * `d-dsh-knj-dsh-knj-obsidian-wiki`），`filepath` 是 `qmd://<collection>/<category>/<file>.md`，
+ * `displayPath` 同样是 `<collection>/<category>/<file>.md`（**带 collection 前缀**，
+ * 这也是 pageRefOf 只取末两段就能推出页面的原因）。
+ * 三条来源按可靠性排序取值，都取不到就返回 undefined（调用方不得据此判「不属于本库」）。
+ */
+export function collectionOf(record: Record<string, unknown>): string | undefined {
+  const named = record.collectionName
+  if (typeof named === 'string' && named.trim().length > 0) return named.trim()
+  for (const field of [record.filepath, record.displayPath, record.path, record.file]) {
+    const text = String(field ?? '').replace(/\\/g, '/')
+    if (text.length === 0) continue
+    const isUri = text.startsWith('qmd://')
+    const body = isUri ? text.slice('qmd://'.length) : text
+    const parts = body.split('/').filter(Boolean)
+    const head = parts[0]
+    if (!head) continue
+    // qmd:// 形态的首段**恒**是 collection；
+    // 裸路径形态只有三段以上（<collection>/<category>/<file>.md）才谈得上前缀是 collection——
+    // 两段形态（<category>/<file>.md）的首段是分类，误当 collection 会把本库结果全部误杀。
+    if (isUri || (parts.length >= 3 && !FORMAL_CATEGORY_SET.has(head))) return head
+  }
+  return undefined
+}
+
+/**
+ * 结果整形：只保留有界字段；id/category 由路径推导（非正式分类/非 .md 一律丢弃）；
+ * 标题优先取 frontmatter title；score 缺失时保持 undefined（不编造）。
+ *
+ * `allowedCollection` 是**跨库防线的第二道**：QMD 的索引库是**全局共享**的——实测一个
+ * `~/.dsh/qmd/index.sqlite` 里同时躺着 4 个库的 collection（本库 7 篇 + 别库 41 篇），
+ * `pageRefOf` 只看「末两段是不是正式分类」，对哪个库的页面一视同仁，于是别库的
+ * `concepts/xxx.md` 会直接冒充本库命中。第一道防线是检索时带 collection 限定
+ * （见 runOfflineSearch），这一道用来兜住「上游漏传参数」或「qmd 某版本忽略该参数」。
+ */
+export function shapeSearchResults(
+  raw: ReadonlyArray<Record<string, unknown>>,
+  limit: number,
+  allowedCollection?: string,
+): SemanticHit[] {
   const out: SemanticHit[] = []
   for (const r of raw) {
     if (out.length >= limit) break
     if (!r || typeof r !== 'object') continue
+    // 归属认得出且不是本库 → 丢弃；认不出归属 → 放行（宁可漏挡，不误杀本库结果）
+    if (allowedCollection !== undefined) {
+      const own = collectionOf(r)
+      if (own !== undefined && own !== allowedCollection) continue
+    }
     const ref = pageRefOf(recordRelPath(r))
     if (!ref) continue
     const score = typeof r.score === 'number' ? r.score : undefined
@@ -181,10 +236,17 @@ export function pendingEmbeddingCount(status: {
 
 export type NotReadyReason = 'model-missing' | 'library-missing'
 
-/** 未就绪答案：给出可执行信息，绝不静默联网。 */
-export function notReadyMessage(reason: NotReadyReason, modelsDir?: string, filename: string = DEFAULT_MODEL_FILENAME): string {
+/** 未就绪答案：给出可执行信息，绝不静默联网。`detail` 是底层真实错误（有则必须如实带出）。 */
+export function notReadyMessage(
+  reason: NotReadyReason,
+  modelsDir?: string,
+  filename: string = DEFAULT_MODEL_FILENAME,
+  detail?: string,
+): string {
   if (reason === 'library-missing') {
-    return '语义检索不可用：进程内 QMD 库（@tobilu/qmd）未能加载——未安装，或其原生依赖在本机不可用；该库随插件安装，无需单独安装/启动 QMD。'
+    return '语义检索不可用：进程内 QMD 库（@tobilu/qmd）未能加载。'
+      + (detail ? `本次底层报错：${detail}。` : '')
+      + '该库随插件安装，无需单独安装/启动 QMD。'
       + '请改用关键词检索 wiki_query（L1–L4 分层检索仍然可用），或重装插件后再试。'
   }
   const dir = modelsDir ?? resolveStateHome().modelsDir
@@ -248,25 +310,40 @@ export interface OfflineSearchOutcome {
  * 严格离线的检索通道组合：向量（本地嵌入模型）+ BM25（无需模型），本地 RRF 融合。
  * 刻意**不使用** store.search() 的混合检索——那会拉起查询扩展与精排两个云端模型。
  * 任一通道失败都降级并如实说明，绝不抛异常。
+ *
+ * `collection` 必须传当前库的 collection id（见 collectionIdOf）：索引库全局共享，
+ * 不限定就会串库——实测同一查询在不限定时会返回别库页面（`module-guolu-v`、
+ * `fallback-default`、`vue-loader` 这类本库根本没有的页），限定后只剩本库 7 篇。
+ * 省略时行为与旧版一致（不限定），仅为兼容既有调用与测试。
  */
-export async function runOfflineSearch(store: SemanticStore, query: string, limit: number): Promise<OfflineSearchOutcome> {
+export async function runOfflineSearch(
+  store: SemanticStore,
+  query: string,
+  limit: number,
+  collection?: string,
+): Promise<OfflineSearchOutcome> {
   const notes: string[] = []
   let vector: ReadonlyArray<Record<string, unknown>> = []
   let lexical: ReadonlyArray<Record<string, unknown>> = []
+  const searchOpts = collection ? { limit, collection } : { limit }
 
   try {
-    vector = (await store.searchVector?.(query, { limit })) ?? []
+    vector = (await store.searchVector?.(query, searchOpts)) ?? []
   } catch (error) {
     notes.push(`向量通道不可用，已降级为关键词通道：${error instanceof Error ? error.message : String(error)}`)
   }
   try {
-    lexical = (await store.searchLex?.(query, { limit })) ?? []
+    lexical = (await store.searchLex?.(query, searchOpts)) ?? []
   } catch (error) {
     if (notes.length === 0) notes.push(`关键词通道失败：${error instanceof Error ? error.message : String(error)}`)
   }
 
   const lists = [vector, lexical].filter((list) => list.length > 0)
-  const results = shapeSearchResults(lists.length > 1 ? fuseRanked(lists, limit) : (lists[0] ?? []), limit)
+  const results = shapeSearchResults(
+    lists.length > 1 ? fuseRanked(lists, limit) : (lists[0] ?? []),
+    limit,
+    collection,
+  )
   return {
     results,
     ...(notes.length > 0 ? { degraded: notes.join('；') } : {}),
@@ -312,9 +389,9 @@ export interface SemanticStore {
    */
   search?(options: { query: string; limit?: number; rerank?: boolean }): Promise<ReadonlyArray<Record<string, unknown>>>
   /** 向量通道：只用本地嵌入模型。 */
-  searchVector?(query: string, options?: { limit?: number }): Promise<ReadonlyArray<Record<string, unknown>>>
+  searchVector?(query: string, options?: { limit?: number; collection?: string }): Promise<ReadonlyArray<Record<string, unknown>>>
   /** 关键词通道（BM25）：完全不需要模型。 */
-  searchLex?(query: string, options?: { limit?: number }): Promise<ReadonlyArray<Record<string, unknown>>>
+  searchLex?(query: string, options?: { limit?: number; collection?: string }): Promise<ReadonlyArray<Record<string, unknown>>>
   update(options?: Record<string, unknown>): Promise<unknown>
   embed(options?: Record<string, unknown>): Promise<unknown>
   getStatus(): Promise<SemanticStatusRaw> | SemanticStatusRaw
@@ -330,6 +407,12 @@ export interface SemanticRuntime {
   store: SemanticStore | null
   /** 索引计数（供工具如实回报「有几篇还没嵌入」；模型缺失时为 0）。 */
   index: { documents: number; pendingEmbedding: number; hasVectorIndex: boolean }
+  /**
+   * 库加载失败时的**真实底层错误**（只有失败时才有）。没有它，界面只能给出一个猜出来的原因——
+   * 2026-10-15 的事故里正好如此：真实错误被吞掉，界面对用户断言「未安装」，而 @tobilu/qmd
+   * 其实装得好好的（`await import()` 实测可用），排查方向被彻底带偏。
+   */
+  loadError?: string
 }
 
 export interface CreateRuntimeOptions {
@@ -378,8 +461,10 @@ export async function createSemanticRuntime(opts: CreateRuntimeOptions): Promise
         },
       })
     }
-  } catch {
-    return { status: 'index-empty', modelPath, modelPresent, store: null, index: emptyIndex }
+  } catch (error) {
+    // 绝不吞掉原因：这条消息是现场唯一的证据（见 SemanticRuntime.loadError 的说明）。
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    return { status: 'index-empty', modelPath, modelPresent, store: null, index: emptyIndex, loadError: detail }
   }
 
   let status: SemanticState = 'index-empty'

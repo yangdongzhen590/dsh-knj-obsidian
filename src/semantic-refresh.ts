@@ -20,6 +20,8 @@ export interface SemanticRuntimeView {
   modelPath: string
   modelPresent: boolean
   store: SemanticStore | null
+  /** 库加载失败时的真实底层错误（见 SemanticRuntime.loadError）：界面要如实带出，不能只给猜测。 */
+  loadError?: string
 }
 
 export interface RefreshRunResult {
@@ -208,7 +210,7 @@ export function createRefresher(opts: RefresherOptions): Refresher {
       return { ...base, modelPresent: false, note: notReadyMessage('model-missing', resolveStateHome(opts.home).modelsDir, DEFAULT_MODEL_FILENAME) }
     }
     if (!runtime.store) {
-      return { ...base, modelPresent: true, note: notReadyMessage('library-missing') }
+      return { ...base, modelPresent: true, note: notReadyMessage('library-missing', undefined, undefined, runtime.loadError) }
     }
 
     try {

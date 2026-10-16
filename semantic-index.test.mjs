@@ -14,6 +14,7 @@ import {
   buildCollectionConfig,
   clampLimit,
   shapeSearchResults,
+  collectionIdOf,
   classifyStatus,
   notReadyMessage,
   offlineModelPins,
@@ -141,6 +142,44 @@ test('未就绪答案：给出精确模型路径与可选下载命令，且不�
   const libMsg = notReadyMessage('library-missing')
   assert.match(libMsg, /@tobilu\/qmd/)
   assert.match(libMsg, /wiki_query/, '库缺失时应指向既有关键词检索兜底')
+
+  // 底层真实错误必须带出来：没有它，界面只能给一个猜出来的原因
+  // （2026-10-15 的事故：真实错误被吞掉，界面对用户断言「未安装」，而库其实装得好好的）。
+  const withDetail = notReadyMessage('library-missing', undefined, undefined, 'TypeError: sqlite 句柄被占用')
+  assert.match(withDetail, /sqlite 句柄被占用/, '有底层错误时必须如实带出，否则无法诊断')
+  assert.match(notReadyMessage('library-missing'), /未能加载/, '无 detail 时不出现「本次底层报错」半句')
+  assert.ok(!notReadyMessage('library-missing').includes('本次底层报错'))
+})
+
+test('库加载失败时把真实错误记进 runtime.loadError（不吞错）', async (t) => {
+  const home = tmp(t)
+  const vault = tmp(t)
+  // 伪模型存在 ⇒ 会走到「打开索引库」这一步，然后由注入的 storeFactory 抛错
+  mkdirSync(resolveStateHome(home).modelsDir, { recursive: true })
+  writeFileSync(resolveModelPath(home), 'not-a-real-gguf', 'utf8')
+
+  const runtime = await createSemanticRuntime({
+    vaultRoot: vault,
+    home,
+    storeFactory: async () => { throw new TypeError('createStore 失败：句柄被占用') },
+  })
+  assert.equal(runtime.store, null)
+  assert.equal(runtime.modelPresent, true, '模型在，失败的是库加载 —— 这是 library-missing 而非 model-missing')
+  assert.match(runtime.loadError ?? '', /句柄被占用/, '真实错误必须留在 runtime 上供诊断')
+  assert.match(runtime.loadError ?? '', /TypeError/, '错误类型也要留下')
+
+  // 成功路径不得留下 loadError（否则界面会对正常状态报警）
+  const ok = await createSemanticRuntime({
+    vaultRoot: vault,
+    home,
+    storeFactory: async () => ({
+      getStatus: () => ({ totalDocuments: 1, needsEmbedding: 0, hasVectorIndex: true }),
+      update: async () => ({}),
+      embed: async () => ({}),
+      close: () => {},
+    }),
+  })
+  assert.equal(ok.loadError, undefined)
 })
 
 test('离线禁用位：云端扩展/精排模型一律指向本地不存在路径，绝不出现 hf: URI', (t) => {
@@ -227,6 +266,62 @@ test('禁用混合检索：runOfflineSearch 绝不调用 store.search()（云端
   }
   await runOfflineSearch(store, 'q', 3)
   assert.equal(hybridCalled, false, 'search() 会拉起 1.7B 查询扩展与 0.6B 精排模型，必须禁用')
+})
+
+// ---------- P0 跨库噪声：索引库是全局共享的，检索必须限定本库 collection ----------
+//
+// 实测事故（2026-10-15，探针跑真实 ~/.dsh/qmd/index.sqlite）：
+//   一个 index.sqlite 里同时躺着 4 个库的 collection——本库 7 篇 + 别库 41 篇
+//   （d-workspace-iobs-pro-wiki 28 / d-workspace-tap-taste-wiki 8 / d-dsh-knj-dsh-knj-prompts-wiki 5）。
+//   检索不限定 collection 时，同一个查询返回的 7 条里有 4 条是本库根本没有的页
+//   （module-guolu-v / fallback-default / vue-loader），agent 拿到的 Top1 直接是错的。
+//   根因：pageRefOf 只看「末两段是不是正式分类」，对哪个库的页面一视同仁。
+// 两道防线：① 检索时带 collection 限定（qmd 原生支持）② 整形时按记录自报的归属再挡一道。
+
+test('collectionIdOf 与建索引时的集合名同源（改名会让检索限定整体失配）', (t) => {
+  const vault = tmp(t)
+  assert.equal(collectionIdOf(vault), Object.keys(buildCollectionConfig(vault).collections)[0])
+  assert.equal(collectionIdOf('D:\\dsh-knj\\dsh-knj-obsidian'), 'd-dsh-knj-dsh-knj-obsidian-wiki')
+  assert.equal(collectionIdOf('/home/x/My Vault'), 'home-x-my-vault-wiki')
+})
+
+test('跨库防线①：collection 必须同时传给向量与关键词两个通道', async () => {
+  const seen = []
+  const store = {
+    async searchVector(q, o) { seen.push(['vector', o]); return [] },
+    async searchLex(q, o) { seen.push(['lex', o]); return [] },
+  }
+  await runOfflineSearch(store, 'q', 5, 'vault-a-wiki')
+  assert.deepEqual(seen.map(([c]) => c), ['vector', 'lex'], '两个通道都要跑')
+  for (const [channel, opts] of seen) {
+    assert.equal(opts.collection, 'vault-a-wiki', `${channel} 通道必须带 collection 限定，否则串库`)
+    assert.equal(opts.limit, 5)
+  }
+
+  // 不传 collection 时保持旧形态（只为兼容既有调用/测试，不改变任何检索行为）
+  const legacy = []
+  await runOfflineSearch({ async searchLex(q, o) { legacy.push(o); return [] } }, 'q', 3)
+  assert.deepEqual(legacy, [{ limit: 3 }])
+})
+
+test('跨库防线②：通道返回别库记录时整形必须丢弃；归属认不出时放行（不误杀）', () => {
+  const raw = [
+    { collectionName: 'other-wiki', displayPath: 'other-wiki/concepts/leak.md', title: '别库页' },
+    { filepath: 'qmd://other-wiki/entities/leak-uri.md', body: 'x' },
+    { path: 'other-wiki/references/leak-bare.md' },
+    { collectionName: 'mine-wiki', displayPath: 'mine-wiki/concepts/keep.md', title: '本库页' },
+    { filepath: 'qmd://mine-wiki/tables/keep-uri.md', body: 'x' },
+    { title: '归属不明', path: 'concepts/unknown-host.md' },
+  ]
+  const shaped = shapeSearchResults(raw, 8, 'mine-wiki')
+  assert.deepEqual(
+    shaped.map((h) => h.id).sort(),
+    ['keep', 'keep-uri', 'unknown-host'],
+    '别库归属必须丢弃；两段路径认不出归属时放行（本库两段路径的页不能被误杀）',
+  )
+
+  // 不传 allowedCollection：行为与旧版完全一致（既有调用不被这条防线改变）
+  assert.equal(shapeSearchResults(raw, 8).length, 6)
 })
 
 // 真实库集成（不联网、不需要真模型）：证明 BM25 通道在没有任何 gguf 的情况下可用，
