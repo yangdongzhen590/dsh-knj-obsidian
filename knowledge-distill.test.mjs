@@ -82,11 +82,23 @@ test('切库后刷新（vault-changed）且清掉旧库的会话选择', () => {
   assert.match(launcher, /setSessionIds\(\[\]\)/)
 })
 
-test('系统功能挖掘为预留位（3 skill 组合未安装时不生成指令）', () => {
-  assert.match(launcher, /预留/)
-  assert.match(launcher, /3 个 skill/)
-  assert.match(launcher, /RESERVED_NOTICE/)
-  assert.match(launcher, /disabled=\{scope === 'both'\}|scope === 'both' &&|scope === 'both'\)/, '预留范围应禁用动作')
+// v2026.10.173：系统功能挖掘从「预留位」转正——预留 chip/横幅/禁用一律撤掉，
+// 改为要求真正的 capability 分支。这条测试的语义因此反转：以前守护「不许生成指令」，
+// 现在守护「必须能生成指令」。
+test('系统功能挖掘已转正（capability 范围可用、无预留横幅、按钮不禁用）', () => {
+  // 枚举里真有这一档，且标签是人话
+  assert.match(launcher, /value: 'capability'/, '范围枚举应含 capability')
+  assert.match(launcher, /label: '系统功能挖掘'/, '标签应为系统功能挖掘')
+  // 指令生成器存在且引用内置 wiki-capability skill
+  assert.match(launcher, /buildCapabilityTrigger/, '应有 capability 指令生成器')
+  assert.match(launcher, /wiki-capability/, '指令应引用内置 wiki-capability skill')
+  assert.match(launcher, /scope === 'capability'/, 'deliver 应显式处理 capability 分支')
+  // 预留态彻底撤除：chip、横幅、常量、按范围禁用
+  assert.doesNotMatch(launcher, /预留/, '不应再出现「预留」字样')
+  assert.doesNotMatch(launcher, /RESERVED_NOTICE/, '不应再保留 RESERVED_NOTICE 常量')
+  assert.doesNotMatch(launcher, /s\.reserved/, '不应再按 reserved 渲染 chip')
+  assert.doesNotMatch(launcher, /disabled=\{scope === 'both'\}/, '不应按范围禁用动作')
+  assert.doesNotMatch(launcher, /disabled=\{[^}]*capability/, 'capability 范围不得禁用动作')
 })
 
 test('会话蒸馏选项提供时间范围与归档边界说明', () => {

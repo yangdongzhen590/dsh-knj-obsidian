@@ -8,3 +8,13 @@ lib/
 # `_system/dsh-sessions/` 里是会话全文（含个人对话内容），误提交会把隐私永久写进仓库历史。
 # 只忽略 _system：知识页本身仍可版本化（否则库就失去了可追溯性）。
 .wiki/_system/
+
+# 会话态临时产物：编辑审阅记录与转写工作目录，属于本机工作状态，与产品代码无关。
+.dsh-edit-review.json
+.dsh-edit-review-archive.json
+.tmp-transcribe-work/
+
+# 示例 demo 的构建产物（源码入库，产物由 `npm run build` 重建，避免每次改动都产生几百 KB 二进制 diff）
+examples/**/client-dist/
+examples/**/client/dist/
+

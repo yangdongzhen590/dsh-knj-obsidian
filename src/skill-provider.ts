@@ -37,6 +37,7 @@ export const SKILL_BUNDLE_DIRS: readonly string[] = [
   'wiki-distill',
   'wiki-init',
   'wiki-query',
+  'wiki-capability',
 ]
 
 /** skill 名规范（与宿主 filesystem provider 一致）。 */

@@ -5846,10 +5846,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				detail: "SQL DDL / MyBatis XML / JPA Entity → tables"
 			},
 			{
-				value: "both",
+				value: "capability",
 				label: "系统功能挖掘",
-				detail: "预留：由 3 个 skill 组合完成（代码结构 → 关系/调用 → 功能聚合），本机暂未安装这些 skill",
-				reserved: true
+				detail: "代码 → 功能知识页（入口枚举 + 调用链 + 行级引用）。四步：入口枚举 → 任务清单 → 串行挖掘 → 状态机续跑"
 			},
 			{
 				value: "sessions",
@@ -5857,8 +5856,6 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				detail: "当前工作区的 DSH 会话 → 按主题蒸馏入库。默认按时间范围；也可在下方复选指定会话，只蒸所选（忽略时间范围，按会话 id 过滤）"
 			}
 		];
-		/** 预留范围的说明（选中时不生成任何会失败的指令）。 */
-		const RESERVED_NOTICE = "「系统功能挖掘」是预留位：需要 3 个 skill 组合（代码结构采集 + 关系/依赖 + 功能聚合），本机尚未安装。装好后在此接入；当前可先用「枚举/常量字典」与「表结构」分别采集。";
 		const RANGE_LABELS = [
 			{
 				value: "3",
@@ -5900,6 +5897,24 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				"步骤：用 wiki_mine 扫描并对账存量知识（new/changed/unchanged/deleted，含同名近似页提醒）→ 蒸馏 → 入库。",
 				"规则：仅支持 Java enum、Java public static final、SQL DDL、MyBatis XML、JPA Entity；不支持 TypeScript/Python/Go/任意 ORM/JSON Schema。",
 				"不得读取 .dsh 会话归档等非代码源；未知/推断字段保持 unknown/inferred，不得补造成事实；不得覆盖他源页面。",
+				BATCH_DISCIPLINE,
+				"完成后按第 5 步格式输出质量评估报告。"
+			].join("\n");
+		}
+		/** 系统功能挖掘指令（引用内置 wiki-capability skill；把代码逆向为功能知识页）。 */
+		function buildCapabilityTrigger(vaultRoot) {
+			return [
+				"请使用内置 wiki-capability skill 在当前工作区执行系统功能挖掘（代码 → 功能知识页）：",
+				`范围：当前知识库根目录 ${vaultRoot ?? "(未知)"} 对应的代码仓库。`,
+				"四步流程（严格按序，不得跳步）：",
+				"1) 【入口枚举】node wiki-capability/scripts/enumerate-entries.mjs --project <工作区根> → entries.json；",
+				"2) 【功能树与任务清单】node wiki-capability/scripts/generate-task-list.mjs --project <根> → tasks.yml + 功能树.md；",
+				"   若功能聚类需要人工判断，先写 .wiki/_system/capability-mining/功能映射.yml 再重跑；",
+				"3) 【串行挖掘】逐任务：node scripts/process-task.mjs get_next → 读线索导航声明的文件 → 写功能知识页（五节结构，见 SKILL.md）",
+				"   → node scripts/check-capability.mjs 校验 I1–I4 → 过则 update_complete，不过则修或 update_failed；",
+				"4) 【断点续跑】中断后用 get_next 自动重置超时任务（10 分钟阈值，最多 3 次重试）。",
+				"规则：每页 category=projects、confidence=inferred、tags 用词表已有词（先用 concept）；",
+				"  行号必须由 grep 核对、不得凭记忆写；只引用实际读过的文件；保留测试文件作为行为证据。",
 				BATCH_DISCIPLINE,
 				"完成后按第 5 步格式输出质量评估报告。"
 			].join("\n");
@@ -6101,12 +6116,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				setSessionIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
 			};
 			const deliver = async (copyOnly) => {
-				if (scope === "both") {
-					setMessage(RESERVED_NOTICE);
-					return;
-				}
 				let text;
 				if (scope === "sessions") text = effectiveIds.length > 0 ? buildSelectedSessionsTrigger(effectiveIds, vaultRoot) : buildDistillTrigger(range, vaultRoot);
+				else if (scope === "capability") text = buildCapabilityTrigger(vaultRoot);
 				else text = buildCollectTrigger(scope);
 				if (copyOnly) {
 					try {
@@ -6115,7 +6127,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					setMessage("触发指令已复制到剪贴板，请粘贴到对话发送给 Agent（未创建新会话）。");
 					return;
 				}
-				await send(text, scope === "sessions" ? "已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-distill 蒸馏并入库。" : "已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-collect 采集并直接入库。");
+				await send(text, scope === "sessions" ? "已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-distill 蒸馏并入库。" : scope === "capability" ? "已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-capability 挖掘功能知识页并入库。" : "已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-collect 采集并直接入库。");
 			};
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "knj-vcol",
@@ -6198,36 +6210,39 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 								className: "knj-hrow",
 								style: { gap: 7 },
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-										type: "radio",
-										name: "distill-scope",
-										checked: scope === s.value,
-										onChange: () => setScope(s.value)
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: { fontWeight: 500 },
-										children: s.label
-									}),
-									s.reserved && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: "knj-chip knj-chip--neutral",
-										title: "待接入：3 个 skill 组合",
-										children: "预留"
-									})
-								]
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+									type: "radio",
+									name: "distill-scope",
+									checked: scope === s.value,
+									onChange: () => setScope(s.value)
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									style: { fontWeight: 500 },
+									children: s.label
+								})]
 							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 								className: "knj-pop__hint",
 								children: s.detail
 							})]
 						}, s.value))
 					}),
-					scope === "both" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "knj-banner knj-banner--warn",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", { children: "预留，暂不可用" }),
-							"：",
-							RESERVED_NOTICE
-						] })
+					scope === "capability" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "knj-banner knj-banner--info",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							className: "knj-vcol",
+							style: { gap: 4 },
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", { children: "系统功能挖掘" }), "：把工作区代码逆向为功能知识页（一功能一页：概念定义 / 系统事实 / 功能树与入口映射 / 调用链路 / 附录）。"] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "knj-pop__hint",
+								children: [
+									"四步管线由 ",
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", { children: "wiki-capability" }),
+									" skill 驱动：入口枚举（确定性）→ 任务清单 → 串行挖掘 → 状态机续跑。 产物落 ",
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", { children: "projects/capability-*.md" }),
+									"，每页带行级引用与 ",
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", { children: "[[wikilink]]" }),
+									"，过 I1–I4 四条不变量才入库。"
+								]
+							})]
+						})
 					}),
 					scope === "sessions" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "knj-pop__row",
@@ -6374,15 +6389,13 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
 							type: "button",
 							className: "knj-btn knj-btn--primary",
-							disabled: scope === "both" || !canStartSession,
-							title: scope === "both" ? RESERVED_NOTICE : !canStartSession ? "当前库尚未初始化：请先点「初始化知识库」" : void 0,
+							disabled: !canStartSession,
+							title: !canStartSession ? "当前库尚未初始化：请先点「初始化知识库」" : void 0,
 							onClick: () => deliver(false),
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconSparkles, { size: 14 }), "新建会话并预填"]
 						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
 							type: "button",
 							className: "knj-btn knj-btn--subtle",
-							disabled: scope === "both",
-							title: scope === "both" ? RESERVED_NOTICE : void 0,
 							onClick: () => deliver(true),
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconCopy, { size: 14 }), "复制触发指令"]
 						})]

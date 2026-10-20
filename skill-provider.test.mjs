@@ -19,7 +19,8 @@ import { apply } from './lib/index.js'
 // join 后产生 \\D:\…，fs 会解析成不存在的 D:\D:\…
 const ROOT = fileURLToPath(new URL('.', import.meta.url))
 const FIX = join(ROOT, 'test-fixtures', 'skill-bundles')
-const EXPECTED = ['wiki-collect', 'wiki-distill', 'wiki-init', 'wiki-mine', 'wiki-query']
+// 6 个 bundle：wiki-capability 于 v2026.10.173 从「预留」转正（提供 wiki-capability skill）。
+const EXPECTED = ['wiki-capability', 'wiki-collect', 'wiki-distill', 'wiki-init', 'wiki-mine', 'wiki-query']
 
 /** 收集 warn 而不打印。 */
 function collector() {
@@ -27,7 +28,7 @@ function collector() {
   return { messages, warn: (message) => messages.push(message) }
 }
 
-test('包根下 5 个 bundle 全部可读，名字与 rank 正确', () => {
+test('包根下 6 个 bundle 全部可读，名字与 rank 正确', () => {
   const { warn } = collector()
   const bundles = readSkillBundles(ROOT, SKILL_BUNDLE_DIRS, warn)
   assert.deepEqual(bundles.map((b) => b.name), EXPECTED)
@@ -54,7 +55,7 @@ test('provider 候选带 provider/source/rank/resourceBase，get 返回正文', 
   const provider = createSkillProvider(ROOT, collector().warn)
   assert.equal(provider.name, SKILL_PROVIDER_NAME)
   const candidates = await provider.list()
-  assert.equal(candidates.length, 5)
+  assert.equal(candidates.length, EXPECTED.length)
   for (const candidate of candidates) {
     assert.equal(candidate.provider, SKILL_PROVIDER_NAME)
     assert.equal(candidate.source, 'bundled')
@@ -102,7 +103,7 @@ test('parseFrontmatter：无 frontmatter 返回 undefined，折叠块合成单�
   assert.equal(parsed.body, '正文')
 })
 
-test('mountSkillProvider：注入 skills 并注册可列出 5 个 skill 的 provider', async () => {
+test('mountSkillProvider：注入 skills 并注册可列出 6 个 skill 的 provider', async () => {
   const injected = []
   let registered
   let registrationDisposed = 0

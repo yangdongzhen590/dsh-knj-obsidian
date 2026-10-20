@@ -3,11 +3,11 @@ import { fetchCheckpoints, fetchVaults, restoreCheckpoint, type CheckpointMeta }
 import { IconCopy, IconSparkles } from './icons.tsx'
 import { SemanticIndexPanel } from './SemanticIndexPanel.tsx'
 
-/** 蒸馏范围：代码侧（enum/db）走 wiki-collect；capability=系统功能挖掘（预留：3 skill 组合）；
+/** 蒸馏范围：代码侧（enum/db）走 wiki-collect；capability=系统功能挖掘（走内置 wiki-capability skill）；
  *  sessions=会话蒸馏——**单一入口**：默认按时间范围蒸当前工作区，也可复选指定会话只蒸所选
  *  （二者曾是两个并列选项「近期会话蒸馏 / 指定会话蒸馏」，合并后由"有没有勾选会话"决定走哪条，
  *  避免用户为了同一件事在两个入口之间选择）。均走 wiki-distill。 */
-export type DistillScope = 'enum' | 'db' | 'both' | 'sessions'
+export type DistillScope = 'enum' | 'db' | 'both' | 'capability' | 'sessions'
 export type DistillRange = '3' | '7' | '30'
 
 /** 宿主会话服务的最小结构面（仅取列表；缺失时降级为手填 session id）。 */
@@ -44,14 +44,13 @@ function normPath(p?: string): string {
 /** 列表一次最多渲染多少条（其余靠搜索缩小；避免几百个会话撑爆面板）。 */
 const MAX_RENDERED_SESSIONS = 50
 
-const SCOPE_LABELS: Array<{ value: DistillScope; label: string; detail: string; reserved?: boolean }> = [
+const SCOPE_LABELS: Array<{ value: DistillScope; label: string; detail: string }> = [
   { value: 'enum', label: '枚举/常量字典', detail: 'Java enum + public static final 常量 → dictionaries' },
   { value: 'db', label: '表结构', detail: 'SQL DDL / MyBatis XML / JPA Entity → tables' },
   {
-    value: 'both',
+    value: 'capability',
     label: '系统功能挖掘',
-    detail: '预留：由 3 个 skill 组合完成（代码结构 → 关系/调用 → 功能聚合），本机暂未安装这些 skill',
-    reserved: true,
+    detail: '代码 → 功能知识页（入口枚举 + 调用链 + 行级引用）。四步：入口枚举 → 任务清单 → 串行挖掘 → 状态机续跑',
   },
   {
     value: 'sessions',
@@ -59,10 +58,6 @@ const SCOPE_LABELS: Array<{ value: DistillScope; label: string; detail: string; 
     detail: '当前工作区的 DSH 会话 → 按主题蒸馏入库。默认按时间范围；也可在下方复选指定会话，只蒸所选（忽略时间范围，按会话 id 过滤）',
   },
 ]
-
-/** 预留范围的说明（选中时不生成任何会失败的指令）。 */
-const RESERVED_NOTICE = '「系统功能挖掘」是预留位：需要 3 个 skill 组合（代码结构采集 + 关系/依赖 + 功能聚合），本机尚未安装。'
-  + '装好后在此接入；当前可先用「枚举/常量字典」与「表结构」分别采集。'
 
 const RANGE_LABELS: Array<{ value: DistillRange; label: string }> = [
   { value: '3', label: '近 3 天' },
@@ -100,6 +95,25 @@ function buildCollectTrigger(scope: 'enum' | 'db' | 'both'): string {
     '步骤：用 wiki_mine 扫描并对账存量知识（new/changed/unchanged/deleted，含同名近似页提醒）→ 蒸馏 → 入库。',
     '规则：仅支持 Java enum、Java public static final、SQL DDL、MyBatis XML、JPA Entity；不支持 TypeScript/Python/Go/任意 ORM/JSON Schema。',
     '不得读取 .dsh 会话归档等非代码源；未知/推断字段保持 unknown/inferred，不得补造成事实；不得覆盖他源页面。',
+    BATCH_DISCIPLINE,
+    '完成后按第 5 步格式输出质量评估报告。',
+  ].join('\n')
+}
+
+/** 系统功能挖掘指令（引用内置 wiki-capability skill；把代码逆向为功能知识页）。 */
+function buildCapabilityTrigger(vaultRoot?: string | null): string {
+  return [
+    '请使用内置 wiki-capability skill 在当前工作区执行系统功能挖掘（代码 → 功能知识页）：',
+    `范围：当前知识库根目录 ${vaultRoot ?? '(未知)'} 对应的代码仓库。`,
+    '四步流程（严格按序，不得跳步）：',
+    '1) 【入口枚举】node wiki-capability/scripts/enumerate-entries.mjs --project <工作区根> → entries.json；',
+    '2) 【功能树与任务清单】node wiki-capability/scripts/generate-task-list.mjs --project <根> → tasks.yml + 功能树.md；',
+    '   若功能聚类需要人工判断，先写 .wiki/_system/capability-mining/功能映射.yml 再重跑；',
+    '3) 【串行挖掘】逐任务：node scripts/process-task.mjs get_next → 读线索导航声明的文件 → 写功能知识页（五节结构，见 SKILL.md）',
+    '   → node scripts/check-capability.mjs 校验 I1–I4 → 过则 update_complete，不过则修或 update_failed；',
+    '4) 【断点续跑】中断后用 get_next 自动重置超时任务（10 分钟阈值，最多 3 次重试）。',
+    '规则：每页 category=projects、confidence=inferred、tags 用词表已有词（先用 concept）；',
+    '  行号必须由 grep 核对、不得凭记忆写；只引用实际读过的文件；保留测试文件作为行为证据。',
     BATCH_DISCIPLINE,
     '完成后按第 5 步格式输出质量评估报告。',
   ].join('\n')
@@ -300,11 +314,6 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
   }
 
   const deliver = async (copyOnly: boolean) => {
-    // 预留范围：不生成任何会失败的指令（3 个 skill 组合尚未安装）
-    if (scope === 'both') {
-      setMessage(RESERVED_NOTICE)
-      return
-    }
     let text: string
     if (scope === 'sessions') {
       // 合并后的单一入口：勾了会话就只蒸所选（忽略时间范围），没勾就按时间范围蒸当前工作区。
@@ -312,6 +321,8 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
       text = effectiveIds.length > 0
         ? buildSelectedSessionsTrigger(effectiveIds, vaultRoot)
         : buildDistillTrigger(range, vaultRoot)
+    } else if (scope === 'capability') {
+      text = buildCapabilityTrigger(vaultRoot)
     } else {
       text = buildCollectTrigger(scope)
     }
@@ -322,7 +333,9 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
     }
     const okText = scope === 'sessions'
       ? '已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-distill 蒸馏并入库。'
-      : '已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-collect 采集并直接入库。'
+      : scope === 'capability'
+        ? '已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-capability 挖掘功能知识页并入库。'
+        : '已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-collect 采集并直接入库。'
     await send(text, okText)
   }
 
@@ -365,16 +378,19 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
           <span className="knj-hrow" style={{ gap: 7 }}>
             <input type="radio" name="distill-scope" checked={scope === s.value} onChange={() => setScope(s.value)} />
             <span style={{ fontWeight: 500 }}>{s.label}</span>
-            {s.reserved && <span className="knj-chip knj-chip--neutral" title='待接入：3 个 skill 组合'>预留</span>}
           </span>
           <span className="knj-pop__hint">{s.detail}</span>
         </label>
       ))}
     </div>
 
-    {scope === 'both' && (
-      <div className="knj-banner knj-banner--warn">
-        <span><strong>预留，暂不可用</strong>：{RESERVED_NOTICE}</span>
+    {scope === 'capability' && (
+      <div className="knj-banner knj-banner--info">
+        <span className="knj-vcol" style={{ gap: 4 }}>
+          <span><strong>系统功能挖掘</strong>：把工作区代码逆向为功能知识页（一功能一页：概念定义 / 系统事实 / 功能树与入口映射 / 调用链路 / 附录）。</span>
+          <span className="knj-pop__hint">四步管线由 <code>wiki-capability</code> skill 驱动：入口枚举（确定性）→ 任务清单 → 串行挖掘 → 状态机续跑。
+            产物落 <code>projects/capability-*.md</code>，每页带行级引用与 <code>[[wikilink]]</code>，过 I1–I4 四条不变量才入库。</span>
+        </span>
       </div>
     )}
 
@@ -454,13 +470,13 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
     )}
 
     <div className="knj-pop__row">
-      <button type="button" className="knj-btn knj-btn--primary" disabled={scope === 'both' || !canStartSession}
-        title={scope === 'both' ? RESERVED_NOTICE : (!canStartSession ? '当前库尚未初始化：请先点「初始化知识库」' : undefined)}
+      <button type="button" className="knj-btn knj-btn--primary" disabled={!canStartSession}
+        title={!canStartSession ? '当前库尚未初始化：请先点「初始化知识库」' : undefined}
         onClick={() => deliver(false)}>
         <IconSparkles size={14} />新建会话并预填
       </button>
-      <button type="button" className="knj-btn knj-btn--subtle" disabled={scope === 'both'}
-        title={scope === 'both' ? RESERVED_NOTICE : undefined} onClick={() => deliver(true)}>
+      <button type="button" className="knj-btn knj-btn--subtle"
+        onClick={() => deliver(true)}>
         <IconCopy size={14} />复制触发指令
       </button>
     </div>
