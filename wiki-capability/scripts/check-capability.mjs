@@ -10,6 +10,8 @@
 //   I2 连通性：≥2 个 [[wikilink]] 指向既有页
 //   I3 可发现性：标题 Top1；问答式 queries ≥80% 进 Top5（任务式在 S1 不判）
 //   I4 新鲜度：sources 块的文件 hash 是否变化（变化 = stale）
+//              hash 为 `pending`/缺失的源**无法判断**，单独列为「免检」并在输出里披露条数
+//              （不影响退出码，但绝不再笼统报「全新鲜」）
 //
 // 退出码: 0=全过；1=有不合格项；2=参数/文件错误
 
@@ -57,7 +59,7 @@ function pageFiles() {
 function checkPage(file) {
   const raw = readFileSync(file, 'utf8')
   const id = file.replace(/\\/g, '/').split('/').pop().replace(/\.md$/, '')
-  const result = { id, file, I1: null, I2: null, I3: null, I4: null, issues: [] }
+  const result = { id, file, I1: null, I2: null, I3: null, I4: null, issues: [], warnings: [] }
 
   // I1 引用密度
   const cites = [...raw.matchAll(/`((?:src|lib|test|client|docs|wiki-[a-z-]+)\/[\w./-]+):(\d+)(?:-(\d+))?`/g)]
@@ -107,19 +109,34 @@ function checkPage(file) {
     }
     if (Array.isArray(sources)) {
       const stale = []
+      // 免检源：hash 缺失或为占位符 `pending` 时**无法判断新鲜度**。这些源既不进 stale、
+      // 也不能算「已核对」——旧实现把它们静默跳过，报告照样写「全新鲜」，读者会以为
+      // 所有源都查过（实测 2026-10-21：主动触发层 的 vault-manager.ts、知识治理 的
+      // mining-progress.ts 各挂着一个 pending，两页都报「✓ 全新鲜」）。
+      // 现在把它们单独列出来并在输出里披露条数；**不计入失败**——免检是挖掘时的显式选择，
+      // 不是内容过期。但必须可见。
+      const exempt = []
       for (const s of sources) {
         const abs = join(projectRoot, s.path)
         if (!existsSync(abs)) {
           stale.push({ path: s.path, reason: 'missing' })
           continue
         }
+        if (!s.hash || s.hash === 'pending') {
+          exempt.push({ path: s.path, reason: s.hash ? 'pending' : 'no-hash' })
+          continue
+        }
         const hash = 'sha256:' + createHash('sha256').update(readFileSync(abs)).digest('hex').slice(0, 16)
-        if (s.hash && s.hash !== 'pending' && s.hash !== hash) {
+        if (s.hash !== hash) {
           stale.push({ path: s.path, reason: 'hash-changed', recorded: s.hash, current: hash })
         }
       }
-      result.I4 = { pass: stale.length === 0, stale }
+      result.I4 = { pass: stale.length === 0, stale, exempt, checked: sources.length - exempt.length, total: sources.length }
       if (stale.length > 0) result.issues.push(`I4: ${stale.length} 个源文件已变化 → stale`)
+      if (exempt.length > 0) {
+        result.warnings = result.warnings ?? []
+        result.warnings.push(`I4: ${exempt.length}/${sources.length} 个源免检（hash=占位符）→ ${exempt.map((e) => e.path).join(', ')}`)
+      }
     }
   } else {
     result.I4 = { pass: false, note: '缺少 sources 块' }
@@ -162,8 +179,9 @@ if (pretty) {
     if (r.I3?.pass !== null && r.I3?.pass !== undefined) {
       console.log(`  I3 ${mark(r.I3.pass)} 标题第 ${r.I3.titleRank} 名；问答式 ${r.I3.qa?.filter((x) => x.rank > 0 && x.rank <= 5).length ?? 0}/${r.I3.qa?.length ?? 0} 进 Top5`)
     }
-    console.log(`  I4 ${mark(r.I4?.pass)} ${r.I4?.stale?.length ? r.I4.stale.length + ' 个源已变' : '全新鲜'}`)
+    console.log(`  I4 ${mark(r.I4?.pass)} ${r.I4?.stale?.length ? r.I4.stale.length + ' 个源已变' : '全新鲜'}（${r.I4?.checked ?? '?'}/${r.I4?.total ?? '?'} 源实查）`)
     for (const issue of r.issues) console.log(`     ⚠ ${issue}`)
+    for (const w of r.warnings ?? []) console.log(`     ! ${w}`)
   }
 }
 process.exit(anyFail ? 1 : 0)

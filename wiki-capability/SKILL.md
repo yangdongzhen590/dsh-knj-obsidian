@@ -229,10 +229,22 @@ updated: <ISO>
 ### 3.4 行号核对（必做）
 
 ```bash
-node scripts/check-anchors.mjs --project <工作区根> --page projects/capability-<功能名>.md
+node scripts/check-anchors.mjs --project <工作区根> --page projects/capability-<功能名>.md --strict
 ```
 
-脚本用 grep 核对每个 `Sources: 路径:行` 的行号是否指向预期符号。**不合格就改，不许手写行号**。
+**退出码语义（必须分清）**：
+
+| 参数 | exit 0 意味着什么 | 不能证明什么 |
+|---|---|---|
+| 不带 `--strict` | 文件都存在、行号都没越界 | **不证明该行是指称的符号**——可以指向完全无关的一行 |
+| 带 `--strict` | 上面全部 + `Sources` 每条括号里声明的符号确实出现在该行区间内 | 括号里没写标识符的条目无法核（会被计为「需人工确认」并披露条数） |
+
+所以 **`Sources` 每条括号里都要写该段里的符号**（`文件名:554`（`RECURRENCE_THRESHOLD = 3`）），
+纯中文描述会让 `--strict` 无可核对。**不合格就改，不许手写行号。**
+
+> 为什么加 `--strict`（2026-10-21 实测）：上一轮靠不带 `--strict` 的 exit 0 判断「没漂移」，
+> 而那次是人工读表才确认的——脚本本身判不了语义。补上后反向验证过：把 `554` 改成 `564`，
+> 立刻 `✗ 不符 … 声明 [RECURRENCE_THRESHOLD] 在该区间内一个都没有`、exit 1。
 
 ### 3.5 四条不变量检查（必做）
 
@@ -246,6 +258,10 @@ node scripts/check-capability.mjs --project <工作区根> --page capability-<�
 | I2 | ≥2 个 `[[wikilink]]` 指向既有页 | 黄牌 |
 | I3 | 标题 Top1；问答式 queries ≥80% 进 Top5 | 黄牌 |
 | I4 | `sources` 哈希变化 → stale | 黄牌 |
+
+> **I4 的逃逸口**：`hash` 写成 `pending` 或留空 = 该源**永久免检**。允许用（挖掘时确实拿不到稳定 hash），
+> 但报告会显式披露「N/M 源实查」——别指望它报「全新鲜」就代表每个源都查过。
+> 反过来，**不要为了让它变绿而把 hash 改成 `pending`**：那是把过期伪装成新鲜。
 
 ### 3.6 入库
 
