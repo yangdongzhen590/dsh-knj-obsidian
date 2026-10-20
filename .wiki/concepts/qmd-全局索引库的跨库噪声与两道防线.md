@@ -63,3 +63,5 @@ searchVector(q, { limit, collection })   // → searchVec(q, model, limit, colle
 ## 关联
 
 排查过程与证据链见 [[dsh-web-知识库调用排查-会话索引]]；同批还有一条 [[语义层未就绪的诊断口径-require-假阴性-被吞掉的真实错误-永久失败缓存]]（同一事故的另一半：库到底加载没加载）。
+
+- 功能页：[[capability-知识检索]]

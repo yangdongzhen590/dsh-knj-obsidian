@@ -63,3 +63,5 @@ const rt = await createSemanticRuntime({ vaultRoot, home })
 ## 关联
 
 跨库噪声（同一事故的另一半）见 [[qmd-全局索引库的跨库噪声与两道防线]]；这类「验证手段本身有缺陷」的教训同族于 [[插件验证纪律与实测陷阱]]。
+
+- 功能页：[[capability-知识检索]]

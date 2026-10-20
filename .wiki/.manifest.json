@@ -38,6 +38,13 @@
       "pages_produced": [
         "table-menu-item"
       ]
+    },
+    "capability-mining:v2026.10.172": {
+      "content_hash": "5e8f0bc76313e99720c0215f623c642cbea5d1d84c27f9958c5cb9392569df77",
+      "last_ingested": "2026-10-20T16:35:29.801Z",
+      "pages_produced": [
+        "capability-边栏-ui"
+      ]
     }
   }
 }

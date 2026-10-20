@@ -32,6 +32,7 @@
 
 ## 参考资料
 
+- [[deepwiki-open-方法考古-代码逆向为-wiki-的提示词与工程配置]] DeepWiki-Open 方法考古：代码逆向为 wiki 的提示词与工程配置 — DeepWiki-Open（MIT，commit d92819a）的方法考古：两段管线（file_tree+README 定结构 → 逐页生成）、九段式页面提示词、Mermaid 强制竖排、Sources 引用格式与 ≥5 源文件纪律、排除清单与 8192 token 分块；明确该抄与不该抄。
 - [[dsh-web-知识库调用排查-会话索引]] 会话索引：dsh web 知识库调用问题排查 — 2026-10-11~13 单会话蒸馏的溯源清单：会话概要与本批 6 张主题页的去向，以及尚未落实的待办。
 - [[dsh-插件宿主接口契约]] DSH 插件宿主接口契约（钩子、事件、日志解码） — DSH 宿主插件可用的钩子（agent/session-start、agent/pre-step、tools/pre-execute…）、事件结构与会话日志 zstd 解码的实测契约。
 
@@ -40,3 +41,8 @@
 
 ## 项目知识
 
+- [[capability-主动触发层]] 主动触发层 — agent 没主动要求时插件自己把知识递到嘴边：L0 库身份注入、L1 两档提示、L3 复发信号（签名 ≥3 次）挂在三个回合钩子上；写入闸与 L2 合取门同在 tools/pre-execute，两个开关默认都 off。命中门槛是静默失败的。
+- [[capability-知识写入]] 知识写入 — 把外部材料变成知识页的通道：3 个工具 + 2 条写路由，统一经 vault-store 原子写入，自动建还原点、contentHash 查重、跨源避让，写后立即重建索引并排语义刷新；写入必须由用户决定。
+- [[capability-知识检索]] 知识检索（SDD 版） — 知识检索功能的业务认知理解：检索概念定义、系统事实、功能树与入口映射、调用链路总结。4 个工具 + 1 条 HTTP 路由共享三套内核，按代价递进分工；语义层按名次递减且整层垫底，只补召回不抢排序。
+- [[capability-知识治理]] 知识治理 — 库健康度的检查与修复通道：lint 查孤儿/断链/标签、checkpoint 可回滚（merge 默认非破坏、exact 删新页）、mine 挖代码结构（Java/SQL/MyBatis/JPA）、init 建库、export 出图。写后治理，不改变已有内容。
+- [[capability-边栏-ui]] 边栏 UI — 人在 dsh web 里看知识库的界面层：API 客户端调用 + 蒸馏启动器（enum/db/capability/sessions 四范围）+ 图谱视图，全部走 /api/obsidian-wiki/*；组件在浏览器端因此不能直接摸宿主的 skill 注册表。
