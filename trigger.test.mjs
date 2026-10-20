@@ -105,6 +105,27 @@ test('matchTaskPages：无关任务必须完全静默（宁可不说是第一原
   assert.deepEqual(matchTaskPages(store, '今天天气怎么样'), [])
 })
 
+test('泛词降权回归（2026-10-14 实测）：dsh/web 这类生态名不得单独撑起命中', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+  // 构造实测场景：一个"宽相关"的索引页，标题同时含 dsh 与 web（于是 web 在小库里 df=1 拿满权重）
+  store.writePage({
+    id: 'dsh-web-index', title: 'dsh-web 排查会话索引', category: 'references',
+    tags: ['index'], source: 's', confidence: 'extracted', created: NOW, updated: NOW,
+    body: '## 本批会话\n\ndsh web 相关排查的溯源清单与待办。',
+  })
+
+  // 只有 dsh+web 两个泛词可命中、没有任何主题词 → 必须沉默
+  // （无降权时：web(df=1)=1.0 + dsh(df=2)=0.7 = 1.7 ≥ 1，会误触发并传导进二档正文注入）
+  assert.deepEqual(matchTaskPages(store, '语义检索是 dsh web 启动预热还是冷启动'), [],
+    '生态名不是区分信号；这类"宽相关"索引页不得被弱命中')
+
+  // 主题词在场时不受影响：真命中的分数由主题词撑起
+  const hits = matchTaskPages(store, '帮我看看 dsh-scheduler 的 cron 时区问题，插件里定时任务没触发')
+  assert.ok(hits.length > 0 && hits.some((h) => h.id === 'dsh-plugin-dev-pitfalls'), '主题词（cron/时区/定时）照常命中')
+})
+
 test('matchTaskPages：空库 / 空任务文本不得抛错，返回空数组', (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))

@@ -110,6 +110,16 @@ function weightOf(df: number): number {
 }
 
 /**
+ * 生态泛词：**无论文档频率多低都不当作区分性信号**（在 df 权重之上再打三折）。
+ *
+ * 为什么 df 衰减不够（2026-10-14 实测）：小库里 `web` 恰好只出现在一页（df=1 拿满权重 1.0），
+ * 与 `dsh`（0.15）合计过线 → 一个"宽相关"的索引页被弱命中，还一路传导进**二档的 4.8KB 正文注入**。
+ * 这类词（产品/生态名）永远不是真正的区分信号——真命中靠主题词（cron/时区/迁移……）撑分。
+ */
+const GENERIC_TERMS = new Set(['dsh', 'web', 'npm'])
+const GENERIC_TERM_DISCOUNT = 0.3
+
+/**
  * 小节标题词的折扣：标题/标签是人工策展的强信号，小节标题却是写作者随手起的
  * （实测「更新」「问题」这类结构性词会造成假阳性），因此只算六成。
  */
@@ -169,7 +179,7 @@ export function matchTaskPages(
   const out: TriggerCandidate[] = []
   for (const entry of pages) {
     const weightOfTerm = (t: string): number => {
-      const base = weightOf(docFreq.get(t) ?? 1)
+      const base = weightOf(docFreq.get(t) ?? 1) * (GENERIC_TERMS.has(t) ? GENERIC_TERM_DISCOUNT : 1)
       return entry.headingOnly.has(t) ? base * HEADING_ONLY_DISCOUNT : base
     }
     const lex = lexicalHitsOf(text, entry, weightOfTerm)
