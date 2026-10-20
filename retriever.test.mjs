@@ -325,3 +325,68 @@ test('中文 bigram 只增加召回：≥3 字中文查询的**未截断命中�
   assert.ok(newIds.includes('wiki-trigger'), '新实现必须召回参照实现漏掉的那页——这才是「只增」的实证')
   assert.ok(!newIds.includes('image-size'), '无关页仍然不得被召回（只增召回 ≠ 什么都召回）')
 })
+
+// ---------------------------------------------------------------------------
+// 问法层（页内 ```queries 块）：能力页的标题与真实提问没有共同 bigram，
+// 词面层只能靠这一档把改写式查询救回来。以下断言钉住「权重位置 / 命中归属 /
+// 护栏口径 / strategy 披露」四件事——缺少任何一条，这一层就会静默退化。
+// ---------------------------------------------------------------------------
+
+test('问法层：正文外的 ```queries 命中标记为 queries，且权重高于 body、低于 title', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const now = '2026-08-25T00:00:00.000Z'
+  // A：标题与正文都没有「垫底」，只有 queries 块里有 → 只能由问法层召回
+  store.writePage({
+    id: 'capability-retrieval', title: '知识检索', category: 'projects', tags: ['retrieval'],
+    source: 's', confidence: 'inferred', created: now, updated: now,
+    body: '## 1. 概念定义\n\n分层检索主链。\n\n```queries\n语义分为什么垫底\n```\n',
+  })
+  // B：同样的词只出现在正文里 → body 档
+  store.writePage({
+    id: 'pitfall-semantic', title: '语义层排序教训', category: 'concepts', tags: [],
+    source: 's', confidence: 'extracted', created: now, updated: now,
+    body: '语义分为什么垫底：名次递减且整层低于 graph 层。',
+  })
+  const r = retrieve(store, '语义分为什么垫底')
+  const a = r.candidates.find((c) => c.id === 'capability-retrieval')
+  const b = r.candidates.find((c) => c.id === 'pitfall-semantic')
+  assert.ok(a, '问法命中必须召回该页')
+  assert.equal(a.matchedBy, 'queries', '命中归属应为 queries（不是 title/tag/body）')
+  assert.ok(b, '正文命中页仍在结果内')
+  assert.ok(a.score > b.score, `问法档(${a.score}) 应高于正文档(${b.score})`)
+  // 权重位置：queries(5) 严格夹在 title(6) 与 tag(4) 之间
+  const titleHit = retrieve(store, '知识检索').candidates.find((c) => c.id === 'capability-retrieval')
+  assert.equal(titleHit.matchedBy, 'title')
+  assert.ok(titleHit.score > a.score, '标题命中必须压过问法命中')
+})
+
+test('问法层：strategy 如实披露 queries（不得谎报成 title+tag）', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const now = '2026-08-25T00:00:00.000Z'
+  // 标题「侧边面板」与下面两个查询**零共享 bigram**，否则标题层先命中、问法层走不到
+  // （第一版测试就踩了这个坑：标题写「边栏 UI」，查询里的「边栏」让 titleRatio>0 先短路）。
+  store.writePage({
+    id: 'capability-x', title: '侧边面板', category: 'projects', tags: [],
+    source: 's', confidence: 'inferred', created: now, updated: now,
+    body: '面板挂了哪些槽位。\n\n```queries\n边栏加一个按钮怎么做\n```\n',
+  })
+  // ① 未触发护栏（只命中部分词：「钮怎」不在声明里）→ 走分层主链，parts 里必须有 queries
+  const partial = retrieve(store, '按钮怎么做')
+  assert.ok(partial.candidates.some((c) => c.matchedBy === 'queries'), `部分命中应归问法层，实际 ${JSON.stringify(partial.candidates.map((c) => [c.id, c.matchedBy]))}`)
+  assert.ok(partial.strategy.includes('queries'), `strategy 应含 queries，实际 ${partial.strategy}`)
+  // ② 触发护栏（全词命中问法）→ 早退分支也必须披露 queries
+  const full = retrieve(store, '边栏加一个按钮怎么做')
+  assert.ok(full.candidates.some((c) => c.matchedBy === 'queries'), `全词命中应归问法层，实际 ${JSON.stringify(full.candidates.map((c) => [c.id, c.matchedBy]))}`)
+  assert.ok(full.strategy.includes('queries'), `护栏分支 strategy 也应含 queries，实际 ${full.strategy}`)
+})
+
+test('问法层兜底：没有 queries 块时 strategy 保持 title+tag（不凭空多出标签）', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+  const r = retrieve(store, 'billing')
+  assert.equal(r.strategy, 'title+tag', `无问法命中时不得改口径，实际 ${r.strategy}`)
+  assert.ok(r.candidates.every((c) => c.matchedBy !== 'queries'))
+})

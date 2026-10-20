@@ -21,6 +21,8 @@ export const RETRIEVAL_CATEGORIES: readonly WikiCategory[] = ['concepts', 'entit
 export const MATCH_SCORE = {
   exactTitle: 10,
   title: 6,
+  /** 问法层：正文 ```queries 块（能力页显式声明的「这页回答什么问题」）。介于标题与标签之间。 */
+  queries: 5,
   tag: 4,
   summary: 2,
   index: 2,
@@ -67,7 +69,7 @@ export interface RetrievalCandidate {
   title: string
   confidence: Confidence
   snippet: string
-  matchedBy: 'title' | 'tag' | 'summary' | 'body' | 'graph' | 'index' | 'semantic'
+  matchedBy: 'title' | 'queries' | 'tag' | 'summary' | 'body' | 'graph' | 'index' | 'semantic'
   /** 相关性分数（越大越相关）= 基础匹配分 + 度加权，再乘 tier 权重。候选恒按此降序返回。 */
   score: number
   /** 归一化后的分层（core/supporting/peripheral），即打分所用的权重档位。 */
@@ -206,6 +208,16 @@ export function retrieve(
   }
   const frontIds = new Set(frontHits.map((c) => c.id))
 
+  /**
+   * 前置层命中的构成标签（供 `strategy` 如实披露）。
+   *
+   * 问法层是独立于 title/tag 的**匹配位置**：能力页的标题与提问往往没有共同 bigram
+   * （「知识检索」vs「词面检索和语义检索什么区别」），命中来自页内 ```queries 块。
+   * 若不写进 strategy，agent 只能看到 'title+tag'，无法判断这页为什么被召回——
+   * 排查「关键词没出现在标题也没出现在标签，却进了结果」时会误以为是脏匹配。
+   */
+  const frontLabel = frontHits.some((c) => c.matchedBy === 'queries') ? 'title+queries+tag' : 'title+tag'
+
   // 摘要层：**严格低于正文层的回退层**——只有当查询出现在摘要里、却不出现在该页正文里
   // （也不在标题/标签里）时才产生候选。
   //
@@ -235,7 +247,7 @@ export function retrieve(
   if (!hasSemantic && guardTriggered) {
     return {
       candidates: rank([...frontHits, ...summaryHits], degree, maxCandidates),
-      strategy: summaryHits.length > 0 ? 'title+tag+summary' : 'title+tag',
+      strategy: summaryHits.length > 0 ? `${frontLabel}+summary` : frontLabel,
       totalPages,
     }
   }
@@ -278,7 +290,7 @@ export function retrieve(
     merged.push(c)
   }
 
-  const parts = ['title+tag']
+  const parts = [frontLabel]
   if (summaryHits.length > 0) parts.push('summary')
   if (bodyHits.length > 0) parts.push('body')
   if (graphHits.length > 0) parts.push('graph')
@@ -288,7 +300,7 @@ export function retrieve(
 
 /** 前置层匹配结果：layer 决定 matchedBy，base 是基础分，guards 决定是否触发成本护栏。 */
 interface FrontMatch {
-  layer: 'title' | 'tag'
+  layer: 'title' | 'queries' | 'tag'
   base: number
   /**
    * 是否触发「前置层命中即停、不下探正文」的成本护栏。
@@ -304,8 +316,25 @@ interface FrontMatch {
 }
 
 /**
- * 前置层匹配（标题 / 标签，均无需读正文）。
- * 与上游一致：一个查询对一页只取**最高**的那一档，不叠加（上游同样是 if/elif 链）。
+ * 解析正文里的 ```` ```queries ```` 块（「任务问法」，不是 schema 字段）。
+ *
+ * 为什么放在正文而不用 frontmatter：`wiki_ingest` 的 pages 入参是 additionalProperties:false、
+ * `writePage()` 又会整份重建 frontmatter 只写固定 11 键——自定义字段活不过一次更新。
+ * 正文 fenced 块是唯一能存活的地方。
+ *
+ * 为什么检索侧必须消费它：实测（2026-10-20）能力页在「问答式查询」上的 Top3 命中率只有 18%，
+ * 因为标题「知识检索」与提问「词面检索和语义检索什么区别」没有共同 bigram。把「这页应该回答
+ * 哪些问法」显式写下来并参与前置层匹配，是把改写式查询从语义层救回词面层的唯一办法。
+ */
+function queriesOf(body: string): string[] {
+  const m = /```queries\n([\s\S]*?)```/.exec(body)
+  if (!m) return []
+  return m[1].split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+}
+
+/**
+ * 前置层匹配（标题 / 问法 / 标签，均无需读正文）。
+ * 与上游一致：一个查询对一页只取**最高**的那一档，不叠加（if/elif 链）。
  */
 function frontMatch(e: PageEntry, q: string, tokens: readonly string[]): FrontMatch | null {
   const title = e.page.title.toLowerCase()
@@ -318,6 +347,17 @@ function frontMatch(e: PageEntry, q: string, tokens: readonly string[]): FrontMa
     // 护栏只认「全部词命中」：多词查询只命中一个词时不该停手，否则弱前置命中会截断正文层与 L4。
     // 单 token 查询命中即占比 1 → guards 仍为 true，护栏契约与改动前一致。
     return { layer: 'title', base, guards: titleRatio === 1 }
+  }
+  // 问法层：能力页的 ```queries 块。权重介于标题(6)与标签(4)之间——
+  // 它是「人工/挖掘时显式声明的问法」，比标签更接近真实提问，但不该压过标题。
+  const declared = queriesOf(e.page.body)
+  if (declared.length > 0) {
+    let best = 0
+    for (const dq of declared) {
+      const r = matchRatio(dq.toLowerCase(), tokens)
+      if (r > best) best = r
+    }
+    if (best > 0) return { layer: 'queries', base: MATCH_SCORE.queries * best, guards: best === 1 }
   }
   const tagRatio = e.page.tags.reduce((max, t) => Math.max(max, matchRatio(t.toLowerCase(), tokens)), 0)
   if (tagRatio > 0) return { layer: 'tag', base: MATCH_SCORE.tag * tagRatio, guards: tagRatio === 1 }
