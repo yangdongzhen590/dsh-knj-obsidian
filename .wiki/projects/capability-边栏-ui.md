@@ -8,7 +8,7 @@ tier: supporting
 source: capability-mining:v2026.10.172
 confidence: inferred
 created: 2026-10-20T02:20:00.000Z
-updated: 2026-10-20T16:35:29.801Z
+updated: 2026-10-21T02:40:00.000Z
 ---
 
 <details><summary>Relevant source files</summary>
@@ -21,6 +21,8 @@ updated: 2026-10-20T16:35:29.801Z
 </details>
 
 > 挖掘批次：能力挖掘重扫（2026-10-20）。本轮纠正三处：①旧版引用的 `src/client/KnowledgePanel.tsx` **已不存在**（当前仓库无此文件），已改为实际存在的组件文件；②蒸馏范围已从 3 项变为 **4 项**（新增 `capability` 系统功能挖掘）；③`both` 不再是「预留位」，而是 enum+db 合并采集；`RESERVED_NOTICE` 的语义已改为「UI 版本过旧」。
+>
+> 复核（2026-10-21）：④`RESERVED_NOTICE` **已整块删除**（连同预留 chip、`{false && …}` 死横幅一起），系统功能挖掘已转正；本页因此有 6 处行号下移 3 行（删的是 `SCOPE_LABELS` 之后那三行），已按 `check-anchors.mjs --strict` 逐条校正。
 
 ## 1. 概念定义
 
@@ -39,7 +41,7 @@ updated: 2026-10-20T16:35:29.801Z
 | 概念 | 说明 |
 |---|---|
 | **DistillScope** | `enum \| db \| capability \| sessions`（`both` 仅作为 `buildCollectTrigger` 的入参保留） |
-| **RESERVED_NOTICE** | 现只在「UI 版本过旧」时提示重启 dsh web（不再是预留位文案） |
+| **RESERVED_NOTICE** | **已删除**（2026-10-21）：系统功能挖掘转正，预留 chip / 死横幅 / 该常量一并移除 |
 | **BATCH_DISCIPLINE** | 还原点 → 查重 → 写前清单 → 入库 → 质量报告（五步，不做阻塞式二次确认） |
 | **projectFilter** | 库根路径 → `--D-workspace-iobs_pro--` 形式的会话目录过滤串 |
 
@@ -197,7 +199,7 @@ graph TD
 ```queries
 边栏的蒸馏启动器怎么用
 蒸馏范围有哪些
-预留位是什么
+系统功能挖掘为什么不再是预留位
 知识面板怎么搜索
 系统功能挖掘从哪启动
 给启动器加一个新的蒸馏范围
@@ -214,13 +216,13 @@ graph TD
 - `src/client/api.ts:165`（restoreCheckpoint 默认 merge）
 - `src/client/api.ts:211-217`（fetchSemanticStatus / triggerSemanticUpdate）
 - `src/client/KnowledgeDistillLauncher.tsx:45`（MAX_RENDERED_SESSIONS = 50）
-- `src/client/KnowledgeDistillLauncher.tsx:47-63`（SCOPE_LABELS 四范围与 RESERVED_NOTICE）
-- `src/client/KnowledgeDistillLauncher.tsx:73`（projectFilterOf）
-- `src/client/KnowledgeDistillLauncher.tsx:83-91`（BATCH_DISCIPLINE 五步）
-- `src/client/KnowledgeDistillLauncher.tsx:94`（buildCollectTrigger）
-- `src/client/KnowledgeDistillLauncher.tsx:107-123`（buildCapabilityTrigger）
-- `src/client/KnowledgeDistillLauncher.tsx:126-139`（buildDistillTrigger）
-- `src/client/KnowledgeDistillLauncher.tsx:319-343`（deliver 分发）
+- `src/client/KnowledgeDistillLauncher.tsx:47-60`（SCOPE_LABELS 四范围定义）
+- `src/client/KnowledgeDistillLauncher.tsx:70`（projectFilterOf）
+- `src/client/KnowledgeDistillLauncher.tsx:80-88`（BATCH_DISCIPLINE 五步）
+- `src/client/KnowledgeDistillLauncher.tsx:91`（buildCollectTrigger）
+- `src/client/KnowledgeDistillLauncher.tsx:104-120`（buildCapabilityTrigger）
+- `src/client/KnowledgeDistillLauncher.tsx:123-136`（buildDistillTrigger）
+- `src/client/KnowledgeDistillLauncher.tsx:316-340`（deliver 分发）
 - `src/client/GraphView.tsx:55`（GraphView 组件）
 - `src/client/GraphView.tsx:70`（fetch /api/obsidian-wiki/graph）
 - `src/routes.ts:28`（路由 BASE）
@@ -234,7 +236,7 @@ graph TD
 ```sources
 [
   {"path":"src/client/api.ts","hash":"sha256:f74609ede649c6cb","symbols":["fetchPages","saveRawPage","fetchSearch","fetchVaults","restoreCheckpoint","triggerSemanticUpdate"]},
-  {"path":"src/client/KnowledgeDistillLauncher.tsx","hash":"sha256:179c3b5b131a0f9a","symbols":["SCOPE_LABELS","projectFilterOf","buildCollectTrigger","buildCapabilityTrigger","buildDistillTrigger","deliver"]},
+  {"path":"src/client/KnowledgeDistillLauncher.tsx","hash":"sha256:a0073f5ad151c3cb","symbols":["SCOPE_LABELS","projectFilterOf","buildCollectTrigger","buildCapabilityTrigger","buildDistillTrigger","deliver"]},
   {"path":"src/client/GraphView.tsx","hash":"sha256:65b3cfbb7cceaa45","symbols":["GraphView"]},
   {"path":"src/routes.ts","hash":"sha256:6cc47ff45e56c5bb","symbols":["WRITE_PATHS"]}
 ]

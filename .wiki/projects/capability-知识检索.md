@@ -8,7 +8,7 @@ tier: core
 source: capability-mining:v2026.10.172
 confidence: inferred
 created: 2026-10-17T15:00:00.000Z
-updated: 2026-10-20T16:19:06.527Z
+updated: 2026-10-21T02:40:00.000Z
 ---
 
 <details><summary>Relevant source files</summary>
@@ -70,6 +70,7 @@ updated: 2026-10-20T16:19:06.527Z
 | 句柄复用 | 语义运行时按库缓存：首次 7–10s，之后 28–83ms（差 100 倍以上） | `src/tools.ts:1163-1165` |
 | 下钻参数上限 | seed 默认 5 / 上限 10；neighbors 默认 8 / 上限 20 | `src/drill.ts:103-106` |
 | 问法层解析位置 | 正文 queries 围栏块（不可用 frontmatter：`writePage()` 只写固定 11 键） | `src/retriever.ts:308-323` |
+| strategy 披露口径 | 前置层含问法命中时输出 `title+queries+tag`；否则维持 `title+tag`（护栏早退分支同样披露） | `src/retriever.ts:219`、`src/retriever.ts:250` |
 
 ### 2.2 数据事实
 
@@ -233,6 +234,7 @@ wiki_query 和 wiki_search_semantic 什么区别
 - `src/retriever.ts:237`（成本护栏短路）
 - `src/retriever.ts:329-357`（frontMatch 前置层与 guards）
 - `src/retriever.ts:386-393`（rank 平局裁决）
+- `src/retriever.ts:219`（frontLabel：问法命中时 strategy 为 title+queries+tag）
 - `src/semantic-index.ts:277-300`（fuseRanked RRF）
 - `src/semantic-index.ts:319-352`（runOfflineSearch 双通道降级）
 - `src/semantic-index.ts:42-47`（collectionIdOf）
@@ -244,7 +246,7 @@ wiki_query 和 wiki_search_semantic 什么区别
 ```sources
 [
   {"path":"src/tools.ts","hash":"sha256:49ce63670351691b","symbols":["wiki_query","wiki_read","SEMANTIC_FALLBACK_MIN_CANDIDATES"]},
-  {"path":"src/retriever.ts","hash":"sha256:508f063e6846fd7b","symbols":["retrieve","MATCH_SCORE","SEMANTIC_RANK_BASE","frontMatch","rank"]},
+  {"path":"src/retriever.ts","hash":"sha256:3043cdd44af9f96d","symbols":["retrieve","MATCH_SCORE","SEMANTIC_RANK_BASE","frontMatch","frontLabel","rank"]},
   {"path":"src/semantic-index.ts","hash":"sha256:2b2c4c8f63a86b80","symbols":["collectionIdOf","fuseRanked","runOfflineSearch"]},
   {"path":"src/semantic-hits.ts","hash":"sha256:c567bbcc9252c5ab","symbols":["semanticRuntimeFor"]},
   {"path":"src/drill.ts","hash":"sha256:0cc07fa01c92b27d","symbols":["drillQuery","drillPage","fuseSeedRanks"]},

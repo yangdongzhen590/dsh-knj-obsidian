@@ -8,7 +8,7 @@ tier: core
 source: capability-mining:v2026.10.172
 confidence: inferred
 created: 2026-10-20T02:15:00.000Z
-updated: 2026-10-20T16:32:05.705Z
+updated: 2026-10-21T02:40:00.000Z
 ---
 
 <details><summary>Relevant source files</summary>
@@ -56,6 +56,9 @@ updated: 2026-10-20T16:32:05.705Z
 |---|---|---|
 | 命中门槛 | `MIN_SCORE = 1`、`MIN_TERMS = 2`、`DEFAULT_MAX = 3` | `src/trigger.ts:49-51` |
 | 门槛判定点 | `matched.length < MIN_TERMS \|\| score < MIN_SCORE` → 不入候选 | `src/trigger.ts:137` |
+| 词面打分三级修正 | ① Σ 命中词权重（按文档频率 df 衰减）→ ② **生态泛词再打三折** → ③ 与 `MIN_SCORE` 比较 | `src/trigger.ts:150-190` |
+| 生态泛词集 | `GENERIC_TERMS = {dsh, web, npm}`、`GENERIC_TERM_DISCOUNT = 0.3` | `src/trigger.ts:119-120` |
+| 泛词折扣应用点 | `weightOf(df) ×（GENERIC_TERMS.has(t) ? 0.3 : 1）` | `src/trigger.ts:182` |
 | 语义兜底阈值 | `SEMANTIC_MIN_SCORE = 0.35` | `src/trigger.ts:206` |
 | 语义兜底是否接受冷启动 | **否**（`requireWarm: true`，冷启动几十秒绝不挂 pre-step） | `src/trigger.ts:231` |
 | 二档正文上限 | `STAGE_TWO_BODY_LIMIT = 4800` 字符 | `src/trigger.ts:300` |
@@ -92,7 +95,7 @@ updated: 2026-10-20T16:32:05.705Z
 ├─ 写入闸 + L2 合取门  tools/pre-execute（两个开关，默认都 off）
 └─ 共用
     ├─ resolveSessionVault          按会话 cwd 只读解析库
-    ├─ matchTaskPages               词面匹配（绝对命中数，MIN_TERMS=2）
+    ├─ matchTaskPages               词面匹配（MIN_TERMS=2；打分含 df 衰减 × 泛词三折）
     ├─ semanticFallbackCandidates   字面 0 命中时的语义兜底（requireWarm）
     └─ shutdownCheck                开关 + 子代理策略的统一门
 ```
@@ -151,6 +154,7 @@ await next() → shutdownCheck（开关/子代理/注入能力）
 → injectedNotices 去重（跨重启，src/trigger.ts:1427）
 → currentVault(session)（解析不出则静默）
 → matchTaskPages（词面，MIN_TERMS=2 + MIN_SCORE=1，src/trigger.ts:150）
+   打分三级：Σ 命中词权重（df 衰减）→ 泛词（dsh/web/npm）再 ×0.3 → 比 MIN_SCORE（src/trigger.ts:182）
 → 0 命中则 semanticFallbackCandidates（requireWarm，src/trigger.ts:219）
 → 记 state.stageOne → 注入 renderTaskReminder(hits)
 ```
@@ -235,8 +239,10 @@ L1 一档和二档是什么
 ## Sources
 
 - `src/trigger.ts:49-51`（MIN_SCORE / MIN_TERMS / DEFAULT_MAX 门槛常量）
-- `src/trigger.ts:137`（门槛判定点）
+- `src/trigger.ts:137`（`MIN_TERMS` / `MIN_SCORE` 门槛判定点）
 - `src/trigger.ts:150`（matchTaskPages）
+- `src/trigger.ts:119-120`（GENERIC_TERMS / GENERIC_TERM_DISCOUNT：生态泛词三折）
+- `src/trigger.ts:182`（泛词折扣应用点：weightOf × GENERIC_TERM_DISCOUNT）
 - `src/trigger.ts:206`（SEMANTIC_MIN_SCORE = 0.35）
 - `src/trigger.ts:219-255`（semanticFallbackCandidates：requireWarm 语义兜底）
 - `src/trigger.ts:300`（STAGE_TWO_BODY_LIMIT = 4800）
@@ -246,16 +252,16 @@ L1 一档和二档是什么
 - `src/trigger.ts:804-816`（recurringFailures）
 - `src/trigger.ts:819`（RECURRENCE_INJECT_LIMIT = 2）
 - `src/trigger.ts:894-898`（gateModeOf：默认 off）
-- `src/trigger.ts:908-913`（高危路径硬编码集）
+- `src/trigger.ts:908-913`（`HIGH_RISK_PATTERNS` 高危路径硬编码集）
 - `src/trigger.ts:1017-1028`（writeGateModeOf 默认 off / VAULT_WRITE_TOOL_NAMES）
 - `src/trigger.ts:1328-1390`（installTrigger 装配与 register 包装）
 - `src/trigger.ts:1375-1380`（shutdownCheck：开关 + 子代理门）
-- `src/trigger.ts:1396-1409`（L0 库身份注入）
-- `src/trigger.ts:1412-1440`（L1 一档：任务去重 + 词面/语义匹配 + 注入）
-- `src/trigger.ts:1442-1492`（turn-stopping：二档入口 + L3 复发）
-- `src/trigger.ts:1481-1488`（L5 已移除的决策记录）
+- `src/trigger.ts:1396-1409`（`register('agent/session-start')` L0 库身份注入）
+- `src/trigger.ts:1412-1440`（`register('agent/pre-step')` L1 一档：任务去重 + 词面/语义匹配 + 注入）
+- `src/trigger.ts:1442-1492`（`register('agent/turn-stopping')` 二档入口 + L3 复发）
+- `src/trigger.ts:1481-1488`（L5 已移除的决策记录：纯注释区间，无可核对符号）
 - `src/trigger.ts:1498-1524`（stageTwo 二档追投）
-- `src/trigger.ts:1533-1597`（写入闸 + L2 合取门）
+- `src/trigger.ts:1533-1597`（`register('tools/pre-execute')` 写入闸 + L2 合取门）
 - `src/trigger.ts:1213-1256`（resolveSessionVault：按会话 cwd 只读解析）
 - `src/semantic-hits.ts:146`（semanticRawHits：触发层语义入口）
 - `src/semantic-hits.ts:84`（semanticRuntimeFor：按库缓存 + 失败冷却窗）
@@ -263,9 +269,9 @@ L1 一档和二档是什么
 
 ```sources
 [
-  {"path":"src/trigger.ts","hash":"sha256:0a4e578f19985416","symbols":["installTrigger","resolveSessionVault","semanticFallbackCandidates","MIN_TERMS","shutdownCheck","writeGateModeOf","gateModeOf"]},
+  {"path":"src/trigger.ts","hash":"sha256:0a4e578f19985416","symbols":["installTrigger","resolveSessionVault","semanticFallbackCandidates","MIN_TERMS","GENERIC_TERMS","GENERIC_TERM_DISCOUNT","shutdownCheck","writeGateModeOf","gateModeOf"]},
   {"path":"src/semantic-hits.ts","hash":"sha256:c567bbcc9252c5ab","symbols":["semanticRawHits","semanticRuntimeFor"]},
-  {"path":"src/vault-manager.ts","hash":"pending","symbols":["readonlyVaultForRoot"]}
+  {"path":"src/vault-manager.ts","hash":"sha256:00e17048c6583e30","symbols":["readonlyVaultForRoot"]}
 ]
 ```
 

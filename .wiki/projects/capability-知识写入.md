@@ -215,7 +215,7 @@ wiki_ingest 怎么保证不重复入库
 - `src/vault-store.ts:132`（renameWithRetry 原子落盘）
 - `src/vault-store.ts:481`（updateManifest）
 - `src/routes.ts:112`（写路径白名单）
-- `src/routes.ts:180`（GET/POST /page）
+- `src/routes.ts:180`（`/page` 路由入口；`GET` 方法判定在 `:182`，`POST` 走后续分支）
 - `src/routes.ts:233`（POST /import）
 - `src/taxonomy.ts:18`（TAG_LIMIT = 5）
 - `src/trigger.ts:1017`（writeGateModeOf 默认 off）

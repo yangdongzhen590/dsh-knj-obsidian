@@ -8,7 +8,7 @@ tier: supporting
 source: capability-mining:v2026.10.172
 confidence: inferred
 created: 2026-10-20T02:10:00.000Z
-updated: 2026-10-20T16:27:00.913Z
+updated: 2026-10-21T02:40:00.000Z
 ---
 
 <details><summary>Relevant source files</summary>
@@ -262,7 +262,7 @@ wiki_mine 支持哪些语言
   {"path":"src/checkpoint.ts","hash":"sha256:11a8c3119b2fd0b1","symbols":["createCheckpoint","listCheckpoints","restoreCheckpoint"]},
   {"path":"src/code-miner.ts","hash":"sha256:62a7994c63ef8f24","symbols":["mineEnums","parseDdlFile","parseMapperXml","parseJpaEntity","mergeTables"]},
   {"path":"src/index-builder.ts","hash":"sha256:051b7e5d6f51d95c","symbols":["rebuildIndex"]},
-  {"path":"src/mining-progress.ts","hash":"pending","symbols":["progressFileFor","readProgress"]},
+  {"path":"src/mining-progress.ts","hash":"sha256:92e4d440e1502af1","symbols":["progressFileFor","readProgress"]},
   {"path":"src/taxonomy.ts","hash":"sha256:49eaed875486d4e4","symbols":["TAG_LIMIT"]},
   {"path":"src/routes.ts","hash":"sha256:6cc47ff45e56c5bb","symbols":["lintVault","listCheckpoints","restoreCheckpoint"]}
 ]
