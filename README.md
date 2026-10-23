@@ -455,7 +455,7 @@ v12 按对抗审查结论给「知识蒸馏」补上可回滚与可评估能力�
 npm ci --legacy-peer-deps --ignore-scripts   # 装依赖：两个旗标缺一不可（见下）
 npm run check   # typecheck + build（服务端）
 npm run check:client && npm run build:client   # 客户端类型检查 + bundle
-node --test *.test.mjs   # 全部测试（431 例）
+node --test *.test.mjs   # 全部测试（469 例）
 ```
 
 > **为什么装依赖必须带这两个旗标**（干净机器实测，缺一必失败）：
@@ -469,7 +469,33 @@ node --test *.test.mjs   # 全部测试（431 例）
 > 实测：`npm ci --legacy-peer-deps --ignore-scripts` → 393 包、exit 0，随后 `tsc` / 构建 / 383 例测试全绿。
 > 另注意：`npm install --no-save @tobilu/qmd` 对本仓是**空操作**（qmd 是 optional peer，npm 认为已满足）。
 
-> 已知基线：`wiki_ingest` 的 `relatedCheck` 输出是 master 工作树中尚未收尾的 WIP（`src/tools.ts` 已新增输出但 `ingest-delta.test.mjs` / `tools.test.mjs` 断言未同步），与 v9/v10 功能无关；相关 8 例在 master 原工作树同样失败。
+> 已知基线：`wiki_ingest` 的 `relatedCheck` WIP 已收尾（`src/tools.ts` 的输出与
+> `ingest-delta.test.mjs` / `tools.test.mjs` 断言同步），2026-10-24 实测全量 469 例全绿。
+
+## 发版约定
+
+**版本号格式：`yy.mm.num`**（年后两位 + 月两位 + **当月递增两位序号**，从 `01` 起）。
+
+| 例子 | 含义 |
+|---|---|
+| `26.10.01` | 2026 年 10 月第 1 次发布 |
+| `26.10.02` | 同月第 2 次发布 |
+| `26.11.01` | 次月第 1 次发布（月份进位，序号重置） |
+
+为什么不用旧格式：历史版本是 `2026.10.215`（年.月.日+当日序号），日与序号混在一段里，
+同月内既看不出发布次序也容易和"日期"混淆。`yy.mm.num` 只保留三段、序号固定两位，
+同一月内的发布天然单调可排。
+
+发版前必须全绿，四步一条不能少：
+
+```bash
+npm run build && npm run build:client   # 服务端 + 客户端产物都要重建
+node --test *.test.mjs                  # 全量测试（当前 469 例）
+npm pack --dry-run                      # 确认 files 白名单里没有多余产物
+```
+
+> 改版本号只需改 `package.json` 的 `version`；不要用 `npm version`（它会顺带建 tag/commit）。
+> npm 禁止覆盖已发布版本：同月再次发布就把 `num` 依次 +1。
 
 ## License
 

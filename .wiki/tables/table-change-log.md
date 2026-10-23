@@ -30,3 +30,8 @@ updated: 2026-10-16T16:34:54.147Z
 
 ## 索引
 - `ix_change_log_tenant_station` (tenant_id, station_id, version)
+
+## 关联
+- 消费方与同桌台会话相关：[[table-table-session]]（一次就餐容器）、[[table-orders]]（订单事实表）
+- 多租户归属键的来源：[[table-tenant]]
+
