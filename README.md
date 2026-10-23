@@ -112,6 +112,12 @@ v2 检索基于同一 `.wiki/` 知识库，提供**双通道**能力，均**只�
 
 除关键词分层检索外，插件还提供**本地语义检索**工具 `wiki_search_semantic`：在 DSH 进程内直接使用 `@tobilu/qmd` 库（**不 spawn 命令、不走 MCP、无需单独安装或启动任何 QMD 插件**），只用两条不会联网的通道——本地嵌入模型向量检索 + BM25 关键词检索——并在本地做 RRF 融合。
 
+> **可选依赖，默认不装**：插件本体 **580 KB**，运行时只依赖 `dompurify` + `marked` 两个纯 JS 包；
+> 语义检索要靠 `@tobilu/qmd`，它会连带拉入原生包，本机实测 **318.6 MB**：
+> `@node-llama-cpp/*` 161 MB、`node-llama-cpp` 37 MB、`tree-sitter-*` 68 MB、
+> `better-sqlite3` 26 MB、`sharp` 19 MB。**不需要语义检索就不要装它**——
+> `wiki_query` / `wiki_read` / `wiki_drill` / `wiki_export` 等关键词路径完全不依赖它。
+
 - 入参：`query`（必填）、`limit`（默认 8，硬上限 20）。
 - 返回：`status`（`ready` / `index-empty` / `index-stale` / `model-missing` / `library-missing`）+ `results[]`（id / category / title / snippet / score，score 为融合分数非概率）+ 必要的 `message`。
 - 页面引用从命中路径推导（`displayPath` / `qmd://` URI），**不使用 QMD 的 `docid`**（它是内容哈希）；只接受七个正式分类下的 `.md`，`_system/`、`_raw/`、`wiki-export/` 永远不会成为结果。
@@ -141,6 +147,22 @@ dsh plugin --profile web add @tobilu/qmd@2.8.3
 ```
 
 （该命令会连带安装 `node-llama-cpp` 等原生依赖；内网需先把这批包镜像进私有仓库——清单与工具在**源码仓库**的 `tools/qmd-offline/`，含 `README.md`、`packages.json` 与 `mirror-qmd.mjs` 的 `list/pack/verify` 命令，不随 npm 包分发。未安装时 `wiki_search_semantic` 会如实返回 `library-missing` 并保持关键词检索 `wiki_query` 完全可用。）
+
+**想整段回退（插件本身不用动）**：
+
+```powershell
+dsh plugin --profile web remove @tobilu/qmd      # 移出 profile 依赖，约省 318 MB
+Remove-Item -Recurse -Force $env:USERPROFILE\.dsh\qmd   # 可选：连模型(313 MB)与索引一起清掉
+```
+
+回退后 `wiki_search_semantic` 返回 `library-missing`（这是个**如实回报的降级**，有测试兜底：
+`semantic-index` / `tools` / `wiki-drill` 各有一例断言"不可用时不抛错、不假装命中"），
+其余工具与他人数据均不受影响。下次想用时按上面的命令重新装一次即可。
+
+> 另一台机器上"装 knj 插件总会下载大包"通常不是插件带的：本插件只把 qmd 声明为 optional peer，
+> 而 DSH profile 默认 `autoInstallPeers: false`。真正常见的来源是**该 profile 里已经写过**
+> `@tobilu/qmd`（装过一次就长期留在清单里），以及浮动范围 `^2.8.3` 随上游发版重新解析。
+> 想彻底按需，就在那台机器的 profile 里确认没有这一行、且保持 `autoInstallPeers: false`。
 
 ### 索引新鲜度与「更新索引」
 
