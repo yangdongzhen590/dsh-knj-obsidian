@@ -152,7 +152,16 @@ dsh plugin --profile web add @tobilu/qmd@2.8.3
 
 ```powershell
 dsh plugin --profile web remove @tobilu/qmd      # 移出 profile 依赖，约省 318 MB
-Remove-Item -Recurse -Force $env:USERPROFILE\.dsh\qmd   # 可选：连模型(313 MB)与索引一起清掉
+```
+
+> ⚠️ **`~/.dsh/qmd/` 是全局共享的，不属于某一个库**，删除前必须知道杀伤面：
+> `index.sqlite` 一个库里按 collection 装多个知识库（实测此刻 4 个：本项目 25 篇 +
+> `iobs_pro` 28 + `tap-taste` 25 + `dsh-knj-prompts` 5），`models/` 也是所有库共用同一份
+> 嵌入模型。删掉它等于**同时对每个库**停掉语义检索，且模型（313 MB）要重新放、索引要重建。
+> 只有确认所有库都不再用语义检索时才执行：
+
+```powershell
+Remove-Item -Recurse -Force $env:USERPROFILE\.dsh\qmd   # 仅当所有库都不再需要语义检索
 ```
 
 回退后 `wiki_search_semantic` 返回 `library-missing`（这是个**如实回报的降级**，有测试兜底：
