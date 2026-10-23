@@ -5,10 +5,12 @@
 //    创建 store 前把 XDG_CACHE_HOME 指向 <home>/.dsh（仅本进程），使 QMD 的模型目录正是 ~/.dsh/qmd/models。
 // 2) 严格离线：模型缺失只回报精确路径与可选下载命令，绝不自动联网。
 // 3) 只索引七个正式分类（天然排除 _system/、_raw/、wiki-export/、.manifest.json）；索引文件不进 vault。
-// 4) 惰性动态 import('@tobilu/qmd')：库缺失时给可执行的降级答案，不影响既有关键词检索。
+// 4) qmd 走可配置解析：独立运行时目录优先、profile 内安装兜底；库缺失时给可执行的降级答案，
+//    不影响既有关键词检索。
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 export const DEFAULT_MODEL_FILENAME = 'embeddinggemma-300M-Q8_0.gguf'
 /** 与 QMD 默认一致的上游仓库（文件名相同）；仅作为人工下载提示，不会被插件自动使用。 */
@@ -246,13 +248,78 @@ export function notReadyMessage(
   if (reason === 'library-missing') {
     return '语义检索不可用：进程内 QMD 库（@tobilu/qmd）未能加载。'
       + (detail ? `本次底层报错：${detail}。` : '')
-      + '该库随插件安装，无需单独安装/启动 QMD。'
-      + '请改用关键词检索 wiki_query（L1–L4 分层检索仍然可用），或重装插件后再试。'
+      + '该库需单独安装（推荐装在 ~/.dsh/qmd-runtime，不进 profile 依赖图，装插件时不会被重新解析）。'
+      + '请改用关键词检索 wiki_query（L1–L4 分层检索仍然可用），或按 README 的「本地语义检索」段安装后再试。'
   }
   const dir = modelsDir ?? resolveStateHome().modelsDir
   return `语义检索未就绪：缺少本地嵌入模型 ${filename}。`
     + `请把模型文件放到 ${dir}\\${filename}（插件不会自动下载，也不会联网）。`
     + `可选手动下载：${MODEL_DOWNLOAD_URL} 。放好后无需重启，再次检索即可自动加载。`
+}
+
+// ---------------------------------------------------------------------------
+// qmd 模块解析（独立运行时目录优先）
+//
+// 为什么要有这一层（2026-10-24 实测）：qmd 一旦进入 profile 的依赖清单，
+// `qmd → node-llama-cpp → 14 个平台二进制包` 这条链就进了 profile 的解析图——
+// **每次 `dsh plugin add`（装什么插件都一样）都会重新解析它们**，一次约 318MB，
+// 其中大半（CUDA / 外平台变体）在本机根本用不到。把 qmd 装在独立运行时目录里，
+// 它就不再属于插件安装图：装/卸任何插件都不再碰这条链。
+// ---------------------------------------------------------------------------
+
+/** qmd 独立运行时目录（推荐的安装位，不属于任何 profile）。 */
+export function qmdRuntimeDir(home: string = homedir()): string {
+  return join(home, '.dsh', 'qmd-runtime')
+}
+
+/** 独立运行时目录里 qmd 的 ESM 入口——与其 package.json 的 exports 一致（dist/index.js）。 */
+export function qmdRuntimeEntry(home: string = homedir()): string {
+  return join(qmdRuntimeDir(home), 'node_modules', '@tobilu', 'qmd', 'dist', 'index.js')
+}
+
+/** 解析成功时插件用到的最小面。 */
+export interface QmdModuleLike {
+  createStore: (options: { dbPath: string; config: unknown }) => Promise<SemanticStore>
+}
+
+export interface ResolveQmdOptions {
+  /** 测试注入点：替代裸 specifier `@tobilu/qmd` 的导入（真实布局里该包可能就在 profile）。 */
+  bareImport?: () => Promise<unknown>
+}
+
+/**
+ * 解析 qmd 模块：**独立运行时目录优先**，其次 profile 内安装（向后兼容老布局）。
+ *
+ * 两条都失败时抛出一条**可执行**的错误：给出两条候选路径、推荐安装命令与底层真实报错。
+ * 绝不返回 undefined——调用方（createRuntime）会把这条消息原样带给用户。
+ */
+export async function resolveQmdModule(home: string = homedir(), opts: ResolveQmdOptions = {}): Promise<QmdModuleLike> {
+  const entry = qmdRuntimeEntry(home)
+  let externalError = ''
+  if (existsSync(entry)) {
+    try {
+      // 一律走 file URL：目录名可能含空格或非 ASCII，字符串拼接会碎
+      return await import(pathToFileURL(entry).href) as unknown as QmdModuleLike
+    } catch (error) {
+      externalError = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    }
+  }
+  try {
+    const mod = await (opts.bareImport ?? (() => import('@tobilu/qmd')))()
+    return mod as QmdModuleLike
+  } catch (error) {
+    const bareError = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    const detail = [externalError && `独立目录导入失败：${externalError}`, `profile 内导入失败：${bareError}`]
+      .filter(Boolean).join('；')
+    throw new Error(
+      '语义检索不可用：找不到可用的 @tobilu/qmd。'
+      + `已尝试 ① 独立运行时目录 ${entry}（${existsSync(entry) ? '存在但导入失败' : '不存在'}）；`
+      + '② profile 内安装的 @tobilu/qmd。'
+      + `推荐单独安装（不进 profile 依赖图，装插件时不会被重新解析）：`
+      + `pnpm add --dir "${qmdRuntimeDir(home)}" @tobilu/qmd@2.8.3 。`
+      + `底层报错：${detail}。关键词检索 wiki_query 不受影响。`,
+    )
+  }
 }
 
 /**
@@ -452,7 +519,7 @@ export async function createSemanticRuntime(opts: CreateRuntimeOptions): Promise
       // 并把「本地模型 + 禁用位」写进进程环境——见 applyOfflineModelEnv 的原因说明。
       if (!process.env.XDG_CACHE_HOME) process.env.XDG_CACHE_HOME = join(home, '.dsh')
       applyOfflineModelEnv(models)
-      const mod = await import('@tobilu/qmd') as unknown as { createStore: (o: { dbPath: string; config: unknown }) => Promise<SemanticStore> }
+      const mod = await resolveQmdModule(home)
       store = await mod.createStore({
         dbPath: paths.dbPath,
         config: {

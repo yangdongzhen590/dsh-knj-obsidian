@@ -138,20 +138,37 @@ mkdir -Force $env:USERPROFILE\.dsh\qmd\models
 
 模型缺失时工具**如实回报未就绪**（给出精确路径与文件名），并且**不打开索引库**（不 import 库、不建 sqlite、不留句柄）；关键词检索 `wiki_query` 始终可用。语义状态固定在 `~/.dsh/qmd/`（`models/`、`index.sqlite`、`config.yml`），索引文件不进 vault。
 
-**内网 / 离线部署**：`@tobilu/qmd` 声明为插件的 **optional peerDependency**（`peerDependenciesMeta` 标 optional）。DSH profile 默认 `autoInstallPeers: false`，因此 **pnpm 不会自动安装它**——这既保证插件本体永远装得上，也避免了它的依赖（`node-llama-cpp` 及其 14 个 `@node-llama-cpp/*` 平台包，其中 CUDA/异平台变体常有上百 MB 且在内网拉不到）在**每次安装任何插件时**被反复尝试下载。
+**内网 / 离线部署**：`@tobilu/qmd` 声明为插件的 **optional peerDependency**（`peerDependenciesMeta` 标 optional）。DSH profile 默认 `autoInstallPeers: false`，因此 **pnpm 不会自动安装它**——这既保证插件本体永远装得上，也避免了它的依赖在插件安装时被顺带拉进来。
 
-要启用语义检索需**显式安装一次**：
+### 启用语义检索：装在独立运行时目录（推荐）
+
+**不要用 `dsh plugin --profile web add @tobilu/qmd`。** 那会把 qmd 写进 profile 依赖图，而 qmd 依赖 `node-llama-cpp`，后者声明了 **14 个平台二进制包**（`linux-*` / `mac-*` / `win-*`，含 CUDA / Vulkan 变体，一次约 **318 MB**）。只要它在 profile 清单里，**之后每一次 `dsh plugin add`（装任何插件都一样）都会重新解析这 14 个包**——这就是"装别的插件也跟着下载大包"的来源。
+
+改成一次性装到独立目录（不属于任何 profile，装/卸插件都不会碰它）：
 
 ```powershell
-dsh plugin --profile web add @tobilu/qmd@2.8.3
+pnpm add --dir "$env:USERPROFILE\.dsh\qmd-runtime" @tobilu/qmd@2.8.3
 ```
 
-（该命令会连带安装 `node-llama-cpp` 等原生依赖；内网需先把这批包镜像进私有仓库——清单与工具在**源码仓库**的 `tools/qmd-offline/`，含 `README.md`、`packages.json` 与 `mirror-qmd.mjs` 的 `list/pack/verify` 命令，不随 npm 包分发。未安装时 `wiki_search_semantic` 会如实返回 `library-missing` 并保持关键词检索 `wiki_query` 完全可用。）
+插件的解析顺序（`src/semantic-index.ts` 的 `resolveQmdModule`）：
+
+1. `~/.dsh/qmd-runtime/node_modules/@tobilu/qmd/dist/index.js` —— 推荐位；
+2. profile 内安装的 `@tobilu/qmd` —— 兼容老布局，仍然可用。
+
+两条都没有时，`wiki_search_semantic` 返回 `library-missing`，错误消息里直接给出两条候选路径与上面的安装命令（底层真实报错不会吞），关键词检索 `wiki_query` 完全不受影响。
+
+> 已知坑：pnpm 12 读 v12 的 store 布局，而 DSH 的 `~/.dsh/pnpm` 可能是 v11——此时 `--offline` 会报
+> 「cache layout for registry metadata has changed」，需要一次**在线**安装来迁移布局。
+>
+> 内网需先把这批包镜像进私有仓库——清单与工具在**源码仓库**的 `tools/qmd-offline/`，含 `README.md`、`packages.json` 与 `mirror-qmd.mjs` 的 `list/pack/verify` 命令，不随 npm 包分发。
 
 **想整段回退（插件本身不用动）**：
 
 ```powershell
-dsh plugin --profile web remove @tobilu/qmd      # 移出 profile 依赖，约省 318 MB
+# 独立安装的：直接删目录即可，不碰 profile
+Remove-Item -Recurse -Force $env:USERPROFILE\.dsh\qmd-runtime
+# 老布局（装在 profile 里的）：从依赖图摘掉
+dsh plugin --profile web remove @tobilu/qmd
 ```
 
 > ⚠️ **`~/.dsh/qmd/` 是全局共享的，不属于某一个库**，删除前必须知道杀伤面：

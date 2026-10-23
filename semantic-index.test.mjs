@@ -22,6 +22,8 @@ import {
   fuseRanked,
   runOfflineSearch,
   createSemanticRuntime,
+  resolveQmdModule,
+  qmdRuntimeEntry,
   MODEL_DOWNLOAD_URL,
 } from './lib/semantic-index.js'
 
@@ -421,4 +423,55 @@ test('单例环境：运行时把本地模型与禁用位写进进程环境（�
   for (const key of ['QMD_EMBED_MODEL', 'QMD_GENERATE_MODEL', 'QMD_RERANK_MODEL']) {
     assert.ok(!String(process.env[key]).startsWith('hf:'), `${key} 不得把单例引向云端`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// qmd 模块解析：按需安装 / 独立运行时目录
+//
+// 背景（2026-10-24）：qmd 一旦进入 profile 依赖图，`qmd → node-llama-cpp → 14 个平台二进制包`
+// 这条链在**每次** `dsh plugin add`（装任何插件）时都会被重新解析，实测一次 318MB。
+// 因此支持把 qmd 单独装在 <home>/.dsh/qmd-runtime，并从 profile 清单里摘掉。
+// ---------------------------------------------------------------------------
+
+test('resolveQmdModule：独立运行时目录优先于 profile 内安装', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-qmd-rt-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const dir = join(home, '.dsh', 'qmd-runtime', 'node_modules', '@tobilu', 'qmd', 'dist')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'index.js'), 'export const marker = "external"\nexport async function createStore(){ return null }\n', 'utf8')
+  assert.equal(qmdRuntimeEntry(home), join(dir, 'index.js'), '入口路径须与 qmd 的 exports 一致（dist/index.js）')
+
+  let bareCalls = 0
+  const mod = await resolveQmdModule(home, {
+    bareImport: async () => { bareCalls += 1; return { createStore: async () => null } },
+  })
+  assert.equal(mod.marker, 'external', '外部目录命中时必须用它，不能落到 profile 那份')
+  assert.equal(typeof mod.createStore, 'function')
+  assert.equal(bareCalls, 0, '外部目录命中时不应触碰裸 specifier')
+})
+
+test('resolveQmdModule：外部目录缺失时回落到 profile 内安装（向后兼容老布局）', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-qmd-rt-fallback-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  let bareCalls = 0
+  const mod = await resolveQmdModule(home, {
+    bareImport: async () => { bareCalls += 1; return { createStore: async () => null } },
+  })
+  assert.equal(bareCalls, 1)
+  assert.equal(typeof mod.createStore, 'function')
+})
+
+test('resolveQmdModule：两条路径都没有时，错误里给出两条路径与可执行的安装命令', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-qmd-rt-missing-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  await assert.rejects(
+    () => resolveQmdModule(home, { bareImport: async () => { throw new Error('MODULE_NOT_FOUND') } }),
+    (error) => {
+      assert.match(error.message, /qmd-runtime/, '要说明独立运行时目录位置')
+      assert.match(error.message, /@tobilu\/qmd/, '要说明包名')
+      assert.match(error.message, /pnpm add/, '要给可执行的安装命令')
+      assert.match(error.message, /MODULE_NOT_FOUND/, '底层真实错误不得被吞掉')
+      return true
+    },
+  )
 })
