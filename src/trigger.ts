@@ -1079,12 +1079,32 @@ export interface InjectedNotice {
   seq: number
 }
 
+/** 落盘消息在 `data.source` 上的可读写面（只取判据用到的字段）。 */
+type NoticeSourceLike = { kind?: string; plugin?: string; form?: string; summary?: string }
+
+/**
+ * 判据：这条落盘的 user/message 是不是**本插件**注入的提醒。
+ *
+ * 三种形态都要认（持久日志比任何一版发布都活得久）：
+ * - `{ kind: 'dsh-knj-obsidian', form: 'notice', summary }` —— 现在写的形态（producer-owned kind；
+ *   DSH 0.2.x 会话 V4 的物理行准入只接受非 `'plugin'` 的 kind，见 installTrigger 里 createNotice 的说明）；
+ * - `{ kind: 'plugin:dsh-knj-obsidian', ... }` —— 宿主 V3→V4 迁移对旧 `plugin` 包装的升格形态
+ *   （`producerKind()` 对未知插件返回 `plugin:<name>`），旧会话升级后经此形态到达；
+ * - `{ kind: 'plugin', plugin: 'dsh-knj-obsidian', ... }` —— 升级前写进旧日志的原始包装。
+ */
+function isOwnNoticeSource(source: NoticeSourceLike | undefined): source is NoticeSourceLike & { kind: string } {
+  if (!source || typeof source.kind !== 'string') return false
+  if (source.kind === PLUGIN_ID) return true
+  if (source.kind === `plugin:${PLUGIN_ID}`) return true
+  return source.kind === 'plugin' && source.plugin === PLUGIN_ID
+}
+
 export function injectedNoticeRecords(events: readonly SessionEventLike[]): InjectedNotice[] {
   const out: InjectedNotice[] = []
   for (const event of events ?? []) {
     if (event?.type !== 'user/message') continue
     const source = event.data?.source
-    if (source?.kind !== 'plugin' || source.plugin !== PLUGIN_ID) continue
+    if (!isOwnNoticeSource(source)) continue
     if (typeof source.summary !== 'string' || source.summary.length === 0) continue
     out.push({
       summary: source.summary,
@@ -1339,7 +1359,11 @@ export function installTrigger(
     const mod = await import(specifier) as { createUserMessage: (input: unknown) => unknown }
     return mod.createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: 'dsh-knj-obsidian', form: 'notice', summary },
+      // 宿主 DSH 0.2.x（会话格式 v4）的物理行准入要求 user/message 的 source.kind 是
+      // producer-owned（非 `'plugin'`；见 @deepseek-ai/dsh-session-format-v3-to-v4 的
+      // `format v4 message requires a producer-owned source kind`），旧写法 `kind: 'plugin'`
+      // 在 v4 会话里写入即被拒、随后整回合失败。dsh-doublecheck 已同样改为自己的包名 kind。
+      source: { kind: PLUGIN_ID, form: 'notice', summary },
     })
   })
 

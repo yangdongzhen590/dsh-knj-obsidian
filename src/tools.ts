@@ -30,6 +30,7 @@ import {
   drillQuery, drillPage, readPageDetail, drillEnabled,
   type DrillSemanticBackend, type DrillSemanticStatus,
 } from './drill.ts'
+import { sessionCwdOf } from './trigger.ts'
 
 /** wiki_mine 输出的表候选 items（dbNew/dbChanged/dbUnchanged/tables 共用）。 */
 const TABLE_ITEM_SCHEMA = {
@@ -152,6 +153,92 @@ function currentReadonlyStore(provider: VaultProvider): VaultStore {
   return provider.current() as VaultStore
 }
 
+// ---------- 会话级库绑定（P0，2026-10-21） ----------
+//
+// 背景：工具原先一律读 provider 的全局当前库（宿主进程内存单值），而 dsh web 常驻、
+// 多工作区会话并存——实测（session-26b6f056 评估）：在 dsh-knj-obsidian 工作区里
+// wiki_query/wiki_read 全部答到 tap-taste 库，连本库自己的 core 页都读不到。
+// 触发层（trigger.ts L0）早已按 session.header.cwd 解析；本块把同一契约接到工具侧：
+//
+//   1) 有会话 cwd 且解析出库 → 用会话库（读写都是它）；
+//   2) 有会话 cwd 但解析不出 → **绝不回退全局库**（回退正是答偏来源），改抛带指引的错误；
+//   3) 无会话上下文（测试替身 / 非 agent 调用）→ 旧全局行为，保证既有用例与宿主兼容。
+//
+// 契约细节对齐 trigger.ts 的 resolveSessionVault：只读解析、零写盘、解析失败按无库处理。
+
+/** 工具执行上下文（dsh-tools ToolRunContext）里的会话 cwd；无 agent/session 时返回 ''。 */
+function execCwdOf(exec: unknown): string {
+  const agent = (exec as { agent?: { session?: unknown } } | null | undefined)?.agent
+  try {
+    return sessionCwdOf(agent?.session)
+  } catch {
+    return ''
+  }
+}
+
+/** 「本工作区没有库」的统一文案：给指引（先 init），并明确说明不会碰别的库。 */
+function noVaultMessage(cwd: string): string {
+  return `[知识库] 本会话工作区（${cwd}）没有知识库（未找到 .wiki）。如需在本工作区建库，先调用 wiki_init；本工具不会读写其它工作区的库。`
+}
+
+/**
+ * 解析本次工具调用该用的库（只读语义：返回的 store 未 ensure）。
+ * undefined 仅在「有会话 cwd 却解析不出库」时出现。
+ */
+function sessionReadonlyStore(provider: VaultProvider, exec: unknown): VaultStore | undefined {
+  const cwd = execCwdOf(exec)
+  if (!cwd.trim()) return currentReadonlyStore(provider)
+  const p = provider as VaultProvider & {
+    readonlyVaultForRoot?: (root: string) => { store: unknown } | undefined
+  }
+  try {
+    const hit = typeof p.readonlyVaultForRoot === 'function' ? p.readonlyVaultForRoot(cwd) : undefined
+    if (hit && hit.store) return hit.store as VaultStore
+  } catch {
+    // 解析失败按「无库」处理，绝不放宽到全局库
+  }
+  return undefined
+}
+
+/**
+ * 解析本次工具调用该用的库（写语义）。与只读版的差别：会话库已存在时幂等 ensure
+ * （补脚手架，不改变任何页面）。无会话上下文回退旧全局行为。
+ */
+function sessionWriteStore(provider: VaultProvider, exec: unknown): VaultStore | undefined {
+  const store = sessionReadonlyStore(provider, exec)
+  if (store) {
+    store.ensure()
+    return store
+  }
+  if (execCwdOf(exec).trim()) return undefined
+  return currentStore(provider)
+}
+
+/**
+ * 会话工作区的「工作区根」：取注册表里是 cwd 祖先的最深已注册根（会话 cwd 常是
+ * 工作区子目录）；没有祖先命中时就是 cwd 本身（wiki_init 在新工作区建库的落点）。
+ */
+function workspaceRootFor(provider: VaultProvider, cwd: string): string {
+  const target = resolve(cwd)
+  let best = ''
+  try {
+    for (const v of provider.listVaults()) {
+      const root = resolve(v.root)
+      if (target === root || target.startsWith(root + '\\') || target.startsWith(root + '/')) {
+        if (root.length > best.length) best = root
+      }
+    }
+  } catch {
+    // 注册表读不了 → 就在 cwd 建库
+  }
+  return best || target
+}
+
+/** store 的库根（.wiki 的父目录）：会话解析的 store 与注册表口径统一从这里取。 */
+function rootOfStore(store: VaultStore): string {
+  return resolve(store.wikiRoot, '..')
+}
+
 /**
  * wiki_query 的语义兜底阈值：词面候选少于该数时才启用语义层（省算力——嵌入调用只在词面几乎无果时发生）。
  *
@@ -198,14 +285,15 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
     query: string,
     mode: string,
     semanticTried: boolean,
+    vaultRoot?: string,
   ): void {
     if (result.candidates.length > 0 || !missLogEnabled()) return
     try {
-      const vaultRoot = provider.currentRecord()?.root ?? vaultRootOf(currentReadonlyStore(provider))
+      const root = vaultRoot ?? provider.currentRecord()?.root ?? vaultRootOf(currentReadonlyStore(provider))
       recordQueryMiss({
         at: new Date().toISOString(),
-        vaultRoot,
-        workspace: workspaceNameOf(vaultRoot),
+        vaultRoot: root,
+        workspace: workspaceNameOf(root),
         query,
         mode,
         totalPages: result.totalPages,
@@ -221,9 +309,9 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
    * 任何不可用/失败（模型缺失、库缺失、索引为空、后端抛错）都返回空数组 → 调用方保持纯词面结果，
    * 绝不抛错、不联网、不建索引。（本函数**允许**惰性加载运行时；触发层用 requireWarm 那一路。）
    */
-  async function semanticFallbackHits(query: string, limit: number): Promise<SemanticPageHit[]> {
-    const vaultRoot = provider.currentRecord()?.root ?? vaultRootOf(currentReadonlyStore(provider))
-    const hits = await semanticRawHits({ vaultRoot, query, limit, factory: runtimeFactory })
+  async function semanticFallbackHits(query: string, limit: number, vaultRoot?: string): Promise<SemanticPageHit[]> {
+    const root = vaultRoot ?? provider.currentRecord()?.root ?? vaultRootOf(currentReadonlyStore(provider))
+    const hits = await semanticRawHits({ vaultRoot: root, query, limit, factory: runtimeFactory })
     return toSemanticPageHits(hits)
   }
 
@@ -300,8 +388,9 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         return [{ type: 'text', text: `写入 wiki：新建 ${value.created.length} 页，更新 ${value.updated.length} 页${ckpt}${tagTip}${tip}` }]
       },
     },
-    async execute(args) {
-      const store = currentStore(provider)
+    async execute(args, exec) {
+      const store = sessionWriteStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
       if (args.contentHash) {
         const prev = store.manifestEntry(args.source)
         if (prev && prev.content_hash === args.contentHash) {
@@ -374,7 +463,7 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       try { rebuildIndex(store) } catch { /* 索引重建失败不影响入库结果 */ }
       // 语义索引（v8）：落盘后安排一次 debounce 后台刷新（模型未就位时只会如实记录，不联网）
       try {
-        const root = provider.currentRecord()?.root ?? vaultRootOf(store)
+        const root = rootOfStore(store)
         refresherFor(root).schedule('wiki_ingest')
       } catch { /* 刷新调度失败不影响入库结果 */ }
       return { created, updated, skipped: false, relatedCheck, checkpointId, tagAudit: tagHintOf(store) }
@@ -419,8 +508,9 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         return [{ type: 'text', text: `已沉淀到 ${value.page}${tip}${tagTip}` }]
       },
     },
-    async execute(args) {
-      const store = currentStore(provider)
+    async execute(args, exec) {
+      const store = sessionWriteStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
       const now = new Date().toISOString()
       // kebab-case（保留 CJK 字符）：id 直接用作文件名，VaultStore 校验通过即可
       const baseId = args.title.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-').replace(/^-+|-+$/g, '') || `note-${Date.now()}`
@@ -464,7 +554,7 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       // 语义索引同样要跟上：capture 是本库当前的主力写路径（实测 21 页里 8 页来自 agent:capture），
       // 而它原先没有 schedule——即"词面层搜得到、语义层搜不到"。debounce + 单飞会把连续 capture 合并成一次。
       try {
-        const root = provider.currentRecord()?.root ?? vaultRootOf(store)
+        const root = rootOfStore(store)
         refresherFor(root).schedule('wiki_capture')
       } catch { /* 刷新调度失败不影响沉淀结果 */ }
       return { page: `${cat}/${id}.md`, related, tagAudit: tagHintOf(store) }
@@ -540,9 +630,10 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         return [{ type: 'text', text: `${head}（跳过 ${value.skipped} 页）${ckpt}${body}${warnText}${note}` }]
       },
     },
-    async execute(args) {
+    async execute(args, exec) {
       const dryRun = args.dryRun !== false // 默认 dryRun：写操作必须显式传 false
-      const store = currentStore(provider)
+      const store = sessionWriteStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
       const taxonomy = loadTaxonomy(store)
 
       // 显式替换表：承载**人工判断**（词表规则第 7 条）。本工具不发明映射，只执行给进来的。
@@ -715,8 +806,10 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         return [{ type: 'text', text: `${base}；标签：${parts.join('，')}${tail}` }]
       },
     },
-    async execute() {
-      return lintVault(currentReadonlyStore(provider))
+    async execute(_args, exec) {
+      const store = sessionReadonlyStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
+      return lintVault(store)
     },
   }))
 
@@ -747,6 +840,8 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
                 score: { type: 'number', required: true },
                 tier: { type: 'string', required: true },
                 source: { type: 'string', required: true },
+                /** frontmatter 摘要（有才给）：让候选自带「这页是什么」，模型据此决定是否 wiki_read。 */
+                summary: { type: 'string' },
               },
             },
           },
@@ -757,10 +852,21 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       render: (args, value) => value.candidates.length === 0
         ? [{ type: 'text', text: `wiki 无匹配（${value.totalPages} 页）。可以说「把 XX 吸收进 wiki」来添加知识。` }]
         // index-only 刻意保持 index.md 的人工目录顺序、不按分重排，这里就不能声称「按分降序」
-        : [{ type: 'text', text: `检索到 ${value.candidates.length} 条候选（${value.strategy}${args.mode === 'index-only' ? '，按 index.md 目录顺序' : '，按分降序'}）：${value.candidates.map((c) => `${c.id}(${c.score.toFixed(1)})`).join('、')}` }],
+        // P1（2026-10-21，session-26b6f056 评估）：每条候选带上 frontmatter 摘要——
+        // 原先只有「标题(分数)」，模型无法判断哪页值得展开，只能整页读（实测一次 14.7k 字符）。
+        : [{
+            type: 'text',
+            text: `检索到 ${value.candidates.length} 条候选（${value.strategy}${args.mode === 'index-only' ? '，按 index.md 目录顺序' : '，按分降序'}）：\n`
+              + value.candidates.map((c) => {
+                const sum = c.summary?.trim() ? ` — ${c.summary.trim().replace(/\s+/g, ' ').slice(0, 80)}` : ''
+                return `- ${c.id}(${c.score.toFixed(1)})${sum}`
+              }).join('\n'),
+          }],
     },
-    async execute(args) {
-      const store = currentReadonlyStore(provider)
+    async execute(args, exec) {
+      const store = sessionReadonlyStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
+      const vaultRoot = rootOfStore(store)
       const mode = args.mode === 'index-only' ? 'index-only' : 'auto'
       const maxCandidates = args.maxCandidates ?? 10
       const wordFace = retrieve(store, args.query, { mode, maxCandidates })
@@ -769,17 +875,17 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       // 这道门**只有候选数一个条件**：2026-10-17 实测证明再叠一条「Top1 分低也兜底」会让 Top1 精度
       // 从 6/10 掉到 4/10（机制见 SEMANTIC_FALLBACK_MIN_CANDIDATES 的注释），不要加回来。
       if (mode === 'index-only' || wordFace.candidates.length >= SEMANTIC_FALLBACK_MIN_CANDIDATES) {
-        recordMissIfEmpty(wordFace, args.query, mode, false)
+        recordMissIfEmpty(wordFace, args.query, mode, false, vaultRoot)
         return wordFace
       }
-      const semanticHits = await semanticFallbackHits(args.query, maxCandidates)
+      const semanticHits = await semanticFallbackHits(args.query, maxCandidates, vaultRoot)
       const semanticTried = semanticFallbackEnabled()
       if (semanticHits.length === 0) {
-        recordMissIfEmpty(wordFace, args.query, mode, semanticTried)
+        recordMissIfEmpty(wordFace, args.query, mode, semanticTried, vaultRoot)
         return wordFace
       }
       const merged = retrieve(store, args.query, { mode, maxCandidates, semanticHits })
-      recordMissIfEmpty(merged, args.query, mode, semanticTried)
+      recordMissIfEmpty(merged, args.query, mode, semanticTried, vaultRoot)
       return merged
     },
   }))
@@ -806,8 +912,9 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         return [{ type: 'text', text: base + hint }]
       },
     },
-    async execute(args) {
-      const store = currentStore(provider)
+    async execute(args, exec) {
+      const store = sessionWriteStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
       const format = args.format === 'json' ? 'json' : 'html'
       const graph = buildGraph(store)
       const exportDir = join(store.wikiRoot, 'wiki-export')
@@ -939,9 +1046,10 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         return [{ type: 'text', text: value.enums.length === 0 && value.tables.length === 0 && value.deleted.length === 0 && value.dbDeleted.length === 0 ? `${base}（${value.note ?? ''}）` : base }]
       },
     },
-    async execute(args) {
+    async execute(args, exec) {
       // 挖掘是只读扫描（不建库）；进度只写已初始化库的 _system，避免“挖掘即建库”
-      const store = currentReadonlyStore(provider)
+      const store = sessionReadonlyStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
       const canPersistProgress = existsSync(store.wikiRoot)
       const projectRoot = join(store.wikiRoot, '..') // .wiki 的父目录 = 项目根
       const kind = args.kind ?? 'both'
@@ -1058,8 +1166,38 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         return [{ type: 'text', text: `${action}知识库：${value.wikiRoot}（当前 ${value.pageCount} 页）。可继续用 wiki-collect 采集代码结构，或用 wiki_ingest/wiki_capture 写入知识页。` }]
       },
     },
-    async execute() {
-      const store = currentStore(provider)
+    async execute(_args, exec) {
+      // 会话级绑定（P0）：init 永远作用在**本会话的工作区**上，而不是全局当前库——
+      // 在 A 工作区里 init 出 B 工作区的库是最隐蔽的一类答偏。
+      const cwd = execCwdOf(exec)
+      if (cwd.trim()) {
+        const p = provider as VaultProvider & {
+          readonlyVaultForRoot?: (root: string) => { store: unknown } | undefined
+          ensureVaultAt?: (root: string) => unknown
+        }
+        let store: VaultStore | undefined
+        try {
+          const hit = typeof p.readonlyVaultForRoot === 'function' ? p.readonlyVaultForRoot(cwd) : undefined
+          if (hit && hit.store) store = hit.store as VaultStore
+        } catch { store = undefined }
+        if (!store && typeof p.ensureVaultAt === 'function') {
+          // 工作区还没有库：在「工作区根」（cwd 的最深已注册祖先，否则 cwd 本身）建，
+          // 注册但不抢占全局当前库（见 VaultManager.ensureVaultAt）。
+          // 注意 existed 必须在 ensureVaultAt **之前**取——它会 ensure 脚手架，先建后查会把首次建库误报成已存在。
+          const wsRoot = workspaceRootFor(provider, cwd)
+          const existedBefore = existsSync(join(wsRoot, '.wiki'))
+          store = p.ensureVaultAt(wsRoot) as VaultStore
+          const wikiRoot = store.wikiRoot
+          store.ensure()
+          return { root: wsRoot, wikiRoot, created: !existedBefore, pageCount: store.listPagesReadonly().length }
+        }
+        if (store) {
+          const wikiRoot = store.wikiRoot
+          const existed = existsSync(wikiRoot)
+          store.ensure()
+          return { root: rootOfStore(store), wikiRoot, created: !existed, pageCount: store.listPagesReadonly().length }
+        }
+      }      const store = currentStore(provider)
       const wikiRoot = store.wikiRoot
       const existed = existsSync(wikiRoot)
       store.ensure()
@@ -1084,8 +1222,10 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         { type: 'text', text: `还原点已创建：${value.id}（快照 ${value.pageCount} 页）。请在质量评估报告中引用该 id，用户可凭它回滚本批次。` },
       ],
     },
-    async execute() {
-      return createCheckpoint(currentStore(provider))
+    async execute(_args, exec) {
+      const store = sessionWriteStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
+      return createCheckpoint(store)
     },
   }))
 
@@ -1112,8 +1252,10 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
           : `共 ${value.checkpoints.length} 个还原点：${value.checkpoints.map((c) => `${c.id}(${c.pageCount}页)`).join('、')}` },
       ],
     },
-    async execute() {
-      return { checkpoints: listCheckpoints(currentReadonlyStore(provider)) }
+    async execute(_args, exec) {
+      const store = sessionReadonlyStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
+      return { checkpoints: listCheckpoints(store) }
     },
   }))
 
@@ -1149,17 +1291,28 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         if (value.status === 'model-missing' || value.status === 'library-missing') {
           return [{ type: 'text', text: value.message ?? '语义检索未就绪' }]
         }
-        const head = value.count === 0
-          ? `语义检索无命中（模板 ${value.status}）`
-          : `语义检索命中 ${value.count} 条（模板 ${value.status}）：${value.results.map((r) => `${r.id}(${r.category})`).join('、')}`
-        const note = value.message ? `；${value.message}` : ''
-        return [{ type: 'text', text: head + note }]
+        if (value.count === 0) {
+          return [{ type: 'text', text: `语义检索无命中（${value.status}）${value.message ? `；${value.message}` : ''}` }]
+        }
+        // P1 续（2026-10-21，tap-taste v2 评估报告 §3.4/§6）：schema 里有 score/snippet 而 render
+        // 丢弃它们——语义命中本来就「只给标题不给证据」，再丢掉片段等于让模型盲选整页读。
+        // score 是 RRF 融合名次分（非概率）；snippet 来自 QMD 命中片段。
+        const lines = value.results.map((r) => {
+          const snippet = r.snippet?.trim()
+            ? ` — ${r.snippet.trim().replace(/\s+/g, ' ').slice(0, 80)}`
+            : ''
+          return `- ${r.id}(${r.category}, ${(r.score ?? 0).toFixed(3)})${snippet}`
+        })
+        const note = value.message ? `\n${value.message}` : ''
+        return [{ type: 'text', text: `语义检索命中 ${value.count} 条（${value.status}）：\n${lines.join('\n')}${note}` }]
       },
     },
-    async execute(args) {
+    async execute(args, exec) {
       const limit = clampLimit(args.limit)
-      const store = currentReadonlyStore(provider)
-      const vaultRoot = provider.currentRecord()?.root ?? join(store.wikiRoot, '..')
+      const store = sessionReadonlyStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
+      // 会话库根（不是全局当前库根！）：语义索引的 collection 按它限定，串库即从这里开始
+      const vaultRoot = rootOfStore(store)
       // 复用按库缓存的语义运行时（与 wiki_query 的兜底、wiki_drill 同一条缓存）：
       // 旧实现在这里**每次调用**自建 store 再 close，等于每次都重新加载 300M 嵌入模型
       // —— 2026-10-17 实测 7–10 秒/次，而缓存路径首次之后只要 28–83ms（差 100 倍以上）。
@@ -1229,7 +1382,7 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
    * 注意：KNJ_OBSIDIAN_SEMANTIC_FALLBACK=off 一并关掉下钻的语义通道——用户设这个开关的意图
    * 就是「别加载 300M 模型」，新消费者不该偷偷绕开它。
    */
-  async function drillSemanticProbe(): Promise<{
+  async function drillSemanticProbe(vaultRoot: string): Promise<{
     backend: DrillSemanticBackend | null
     status: DrillSemanticStatus
     holder: { degraded?: string }
@@ -1238,8 +1391,6 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
     if (!semanticFallbackEnabled()) {
       return { backend: null, status: 'disabled', holder: { degraded: '语义层已被 KNJ_OBSIDIAN_SEMANTIC_FALLBACK=off 关闭。' } }
     }
-    const base = currentReadonlyStore(provider)
-    const vaultRoot = provider.currentRecord()?.root ?? vaultRootOf(base)
     const runtime = await semanticRuntimeFor(vaultRoot, runtimeFactory)
     if (!runtime) return { backend: null, status: 'library-missing', holder }
     if (!runtime.modelPresent) return { backend: null, status: 'model-missing', holder }
@@ -1258,11 +1409,11 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
     return { backend, status: runtime.status, holder }
   }
 
-  function recordDrillMiss(res: { seeds: readonly unknown[]; totalPages: number }, query: string, semanticTried: boolean): void {
+  function recordDrillMiss(res: { seeds: readonly unknown[]; totalPages: number }, query: string, semanticTried: boolean, vaultRoot?: string): void {
     if (res.seeds.length > 0 || !missLogEnabled()) return
     try {
-      const vaultRoot = provider.currentRecord()?.root ?? vaultRootOf(currentReadonlyStore(provider))
-      recordQueryMiss({ at: new Date().toISOString(), vaultRoot, workspace: basename(vaultRoot), query, mode: 'drill', totalPages: res.totalPages, semanticTried })
+      const root = vaultRoot ?? provider.currentRecord()?.root ?? vaultRootOf(currentReadonlyStore(provider))
+      recordQueryMiss({ at: new Date().toISOString(), vaultRoot: root, workspace: basename(root), query, mode: 'drill', totalPages: res.totalPages, semanticTried })
     } catch {
       // 诊断日志绝不打断检索
     }
@@ -1336,8 +1487,9 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         return [{ type: 'text', text: `下钻 ${value.seeds.length} 个种子（${value.strategy}）${cut}：${parts.join('｜')}${note}` }]
       },
     },
-    async execute(args) {
-      const store = currentReadonlyStore(provider)
+    async execute(args, exec) {
+      const store = sessionReadonlyStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
       if (!drillEnabled()) {
         return {
           mode: 'query' as const, strategy: 'disabled', seeds: [], totalPages: store.listPagesReadonly().length,
@@ -1353,7 +1505,7 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
           message: '请给出 query（语义种子 + 一跳邻居）或 page（已知 id 的纯图下钻）之一。',
         }
       }
-      const probe = await drillSemanticProbe()
+      const probe = await drillSemanticProbe(rootOfStore(store))
       const res = await drillQuery(store, args.query, {
         semantic: probe.backend,
         semanticStatus: probe.status,
@@ -1361,7 +1513,7 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         limit: args.limit,
         neighbors: args.neighbors,
       })
-      recordDrillMiss(res, args.query, probe.status !== 'disabled')
+      recordDrillMiss(res, args.query, probe.status !== 'disabled', rootOfStore(store))
       return res
     },
   }))
@@ -1397,8 +1549,9 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         }]
       },
     },
-    async execute(args) {
-      const store = currentReadonlyStore(provider)
+    async execute(args, exec) {
+      const store = sessionReadonlyStore(provider, exec)
+      if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
       const detail = readPageDetail(store, args.id, args.category as WikiCategory | undefined)
       if (!detail) {
         return { found: false as const, message: `页面 id 不存在：${args.id}。可先用 wiki_query 或 wiki_drill 找到真实 id。` }

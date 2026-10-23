@@ -12,29 +12,73 @@ import type { SessionFace, WorkspaceFace } from './VaultHeader.tsx'
 export const name = 'dsh-knj-obsidian'
 
 /**
- * The subset of the better-sidebar client service this plugin touches.
- * Structural type: the junction node_modules has no dsh-better-sidebar, so
- * we must not import types from 'dsh-better-sidebar/client/service' — the
- * host provides the implementation at runtime (see tsdown CLIENT_EXTERNALS).
+ * DSH 0.2 原生右侧栏的扩展面（结构类型，不 import 宿主包）。
+ *
+ * 0.2.x 自带 `@deepseek-ai/dsh-client-ui-sidebar-right`，它对外开四个 slot seat：
+ *   - `sidebar.right.tab.menu.item`  往「+」菜单/动作菜单加条目
+ *   - `sidebar.right.pane.tab`       **keyed**：按 tab 类型定义的 `id` 注册内容面板
+ *   - `sidebar.right.pane.tab.title` 同上的标题（可选，缺省用注册时捕获的 title）
+ *   - `sidebar.right.tab.guide(.entry)` 引导页卡片
+ * 类型定义本身注册到 `ctx.sidebarRightTabs`，其中 `kind` 是 openTab 用的判别式、
+ * `id` 是 pane.tab / pane.tab.title 两个 seat 的 key（两者可以是同一个字符串）。
+ * 见 packages/client/ui-sidebar-right/lib/types/client/{tab-registry,contract/slots}.d.ts
  */
-interface BetterSidebarService {
-  registerTab(descriptor: {
+interface NativeTabDefinition {
+  /** 实现身份：唯一，且是 body/title 注册时的 key。 */
+  id: string
+  /** 类型判别式：openTab 用它。 */
+  kind: string
+  /** 'extension' = 第三方类型，优先级最高，可覆盖同 kind 的 builtin。 */
+  priority?: 'extension' | 'builtin' | 'fallback'
+  /** 每个 tab 是否独立内容（缺省＝每个 pane 里同 kind 只留一页）。 */
+  multiple?: boolean
+  /** 页签标题（每次渲染都重新读，所以语言切换无需重注册）。 */
+  title: () => string
+  /** 引导页上的入口卡片。 */
+  guide?: ReadonlyArray<{
     id: string
-    title: string | (() => string)
-    icon?: unknown
-    /** The host renders `descriptor.component` (TabDescriptor.component in 0.14.0). */
-    component: (props: { tab?: { path?: string } }) => unknown
-  }): () => void
-  /** Open a tab by type; the seed's `path` lands in the tab's `path` field. */
-  openTab(seed: { type: string; title?: string; path?: string }, scope?: unknown): void
+    order: number
+    title: () => string
+    description?: () => string
+  }>
 }
+
+interface SidebarRightTabsService {
+  register(definition: NativeTabDefinition): () => void
+}
+
+/** 右侧栏的打开入口（`ctx.sidebarRight`）：按 kind 开页，`params` 进 navigation.params。 */
+interface SidebarRightService {
+  openTab(kind: string, options?: { params?: Record<string, unknown> }): void
+}
+
+/** `sidebar.right.pane.tab(.title)` 两个 keyed seat 交给组件的东西（只用得到 useTabInfo）。 */
+interface PaneTabProps {
+  /** 返回 { tab: { ..., navigation: { address, params } } }；未提交的 tab 会抛。 */
+  useTabInfo?: () => { tab?: { navigation?: { params?: Record<string, unknown> } } }
+}
+
+interface SlotsService {
+  /** keyed seat：key = 类型定义的 id。组件按 seat 契约收 props（这里用泛型保持调用方类型）。 */
+  register<P = unknown>(descriptor: { name: string; key?: string; locale?: string }, component: (props: P) => unknown): () => void
+  /** 等宿主提供该 seat 后再注册（宿主未提供时不注册，也不抛）。 */
+  inject(name: string, register: () => () => void): void
+}
+
+/** 插件内使用的 tab 类型标识（id 与 kind 取同一个值，便于排查）。 */
+const WIKI_TAB = 'dsh-knj-obsidian:wiki'
+/** 笔记工作台：由侧栏里点节点触发，靠 openTab 的 params 传 id|category。 */
+const NOTE_TAB = 'dsh-knj-obsidian:note'
 
 /** The client context shape this plugin relies on (structural). */
 interface ClientContext {
-  betterSidebar?: BetterSidebarService
+  /** 0.2 原生右侧栏的类型注册表、slot 服务与打开入口（0.1.x 没有，走降级路径）。 */
+  slots?: SlotsService
+  sidebarRightTabs?: SidebarRightTabsService
+  sidebarRight?: SidebarRightService
   /**
-   * v8.1：新版宿主 client 用 ctx.get('workspaces'/'sessions') + exports.inject
-   * 声明才能取到服务（属性访问在新版 Loader 下不可见）。旧版回退 ctx[name]。
+   * 新版宿主 client 用 ctx.get('workspaces'/'sessions') + exports.inject 声明才能
+   * 取到服务（属性访问在新版 Loader 下不可见）。旧版回退 ctx[name]。
    */
   get?(name: string): unknown
   effect(callback: () => unknown, label?: string): void
@@ -63,7 +107,12 @@ interface SessionServiceFace extends SessionFace {
   refresh?(): Promise<void> | void
 }
 
-export const inject = ['betterSidebar', 'workspaces', 'sessions', 'conversation']
+/**
+ * 只声明本插件硬依赖的宿主服务：slots / sidebarRightTabs / sidebarRight（都在 0.2 的
+ * ui-sidebar-right 里提供）。workspaces / sessions / conversation 继续用
+ * ctx.get 惰性取，缺了只降级不置 INACTIVE。
+ */
+export const inject = ['slots', 'sidebarRightTabs', 'sidebarRight']
 
 /** 双通道取宿主 client 服务：新版 ctx.get(name) → 旧版 ctx[name] 属性。 */
 function hostService<T>(ctx: ClientContext, name: string): T | undefined {
@@ -83,9 +132,16 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
     // 设计系统 v2：注入宿主令牌驱动的样式（幂等，全局只注入一次）
     injectWikiStyles()
-    const betterSidebar = hostService<BetterSidebarService>(ctx, 'betterSidebar')
-    if (!betterSidebar) return
-    // v7/v8.1：防御性读取宿主工作区/会话运行时；不可用时降级为手动切换（不阻塞标签渲染）
+    const slots = ctx.slots
+    const tabs = ctx.sidebarRightTabs
+    const sidebarRight = ctx.sidebarRight
+    if (!slots || !tabs) {
+      // 0.1.x 宿主没有原生右侧栏（或本插件被放在无侧栏的壳里）：服务端那半
+      // （wiki 工具 / HTTP 路由 / skill）不受影响，只是不挂 UI。
+      console.info('[knj-obsidian] native right sidebar unavailable; skipping client UI')
+      return () => { removeWikiStyles() }
+    }
+    // v8.1：防御性读取宿主工作区/会话运行时；不可用时降级为手动切换（不阻塞标签渲染）
     const workspaces = hostService<WorkspaceFace>(ctx, 'workspaces')
     const sessions = hostService<SessionServiceFace>(ctx, 'sessions')
     const conversation = hostService<ConversationFace>(ctx, 'conversation')
@@ -262,22 +318,89 @@ export function apply(ctx: ClientContext): void {
       }
     }
     const disposers: Array<() => void> = []
-    /** 边栏点击笔记/图谱节点 → 主区域打开"笔记"工作台标签。 */
+    /** 点侧栏里的笔记/图谱节点 → 按 kind 开一个「笔记」页，种子走 params（id|category + 标题）。 */
     const openNote = (id: string, category: string, title: string): void => {
-      betterSidebar?.openTab({ type: 'dsh-knj-obsidian:note', title, path: `${id}|${category}` })
+      if (!sidebarRight) {
+        console.warn('[knj-obsidian] ctx.sidebarRight 不可用，无法打开笔记工作台')
+        return
+      }
+      try {
+        sidebarRight.openTab(NOTE_TAB, { params: { path: `${id}|${category}`, title } })
+      } catch (e) {
+        console.warn('[knj-obsidian] openTab(note) failed:', String(e))
+      }
     }
-    // 边栏标签（浏览/图谱/知识蒸馏）
-    disposers.push(betterSidebar.registerTab({
-      id: 'dsh-knj-obsidian',
-      title: '知识库',
-      component: () => h(WikiSidebar, { openNote, workspaces, sessions, startAgentSession }),
-    }))
-    // 主区域工作台标签（笔记视图，读 tab.path 的 id|category）
-    disposers.push(betterSidebar.registerTab({
-      id: 'dsh-knj-obsidian:note',
-      title: '笔记',
-      component: (props: { tab?: { path?: string } }) => h(NoteWorkbench, { path: props.tab?.path }),
-    }))
+
+    /** 从 seat props 里读回 openTab 带过来的导航参数（navigation.params）。 */
+    const readParams = (props: PaneTabProps): Record<string, unknown> | undefined => {
+      try {
+        return props.useTabInfo?.()?.tab?.navigation?.params
+      } catch {
+        // 未提交的 tab 会抛：此时按"无参数"降级，不炸整个面板
+        return undefined
+      }
+    }
+
+    /** 笔记工作台内容：读 params.path（id|category），交给 NoteWorkbench。 */
+    const NoteBody = (props: PaneTabProps) => {
+      const params = readParams(props)
+      const path = typeof params?.path === 'string' ? params.path : undefined
+      return h(NoteWorkbench, { path, onPagesChanged: () => { /* 侧栏树下次展开时再拉 */ } })
+    }
+
+    /** 笔记页签的动态标题：用 params.title（缺省回落到注册时捕获的「笔记」）。 */
+    const NoteTitle = (props: PaneTabProps) => {
+      const params = readParams(props)
+      const title = typeof params?.title === 'string' && params.title ? params.title : '笔记'
+      return h('span', null, title)
+    }
+
+    // ---- 类型定义（tab 的静态面：身份 id / 判别式 kind / 标题 / 引导卡片）----
+    const disposeWikiType = tabs.register({
+      id: WIKI_TAB,
+      kind: WIKI_TAB,
+      priority: 'extension',
+      title: () => '知识库',
+      guide: [
+        {
+          id: 'wiki',
+          order: 10,
+          title: () => '知识库',
+          description: () => '浏览 / 图谱 / 知识蒸馏（dsh-knj-obsidian）',
+        },
+      ],
+    })
+    if (typeof disposeWikiType === 'function') disposers.push(disposeWikiType)
+
+    // 笔记是"由侧栏点击打开"的页，不进引导页（无 guide）；multiple 让每篇笔记各自一页。
+    const disposeNoteType = tabs.register({
+      id: NOTE_TAB,
+      kind: NOTE_TAB,
+      priority: 'extension',
+      multiple: true,
+      title: () => '笔记',
+    })
+    if (typeof disposeNoteType === 'function') disposers.push(disposeNoteType)
+
+    // ---- 内容面板：`sidebar.right.pane.tab` keyed seat，key 就是类型定义的 id ----
+    const disposeWikiBody = slots.inject('sidebar.right.pane.tab', () =>
+      slots.register({ name: 'sidebar.right.pane.tab', key: WIKI_TAB }, () =>
+        h(WikiSidebar, { openNote, workspaces, sessions, startAgentSession }),
+      ),
+    )
+    if (typeof disposeWikiBody === 'function') disposers.push(disposeWikiBody)
+
+    const disposeNoteBody = slots.inject('sidebar.right.pane.tab', () =>
+      slots.register({ name: 'sidebar.right.pane.tab', key: NOTE_TAB }, NoteBody),
+    )
+    if (typeof disposeNoteBody === 'function') disposers.push(disposeNoteBody)
+
+    // 页签标题 seat（可选）：让每篇笔记的 chip 显示笔记名而不是笼统的「笔记」。
+    const disposeNoteTitle = slots.inject('sidebar.right.pane.tab.title', () =>
+      slots.register({ name: 'sidebar.right.pane.tab.title', key: NOTE_TAB }, NoteTitle),
+    )
+    if (typeof disposeNoteTitle === 'function') disposers.push(disposeNoteTitle)
+
     return () => {
       for (const d of disposers) d()
       // 卸载/HMR 时移除注入的 <style>，避免旧版本 CSS 常驻 DOM

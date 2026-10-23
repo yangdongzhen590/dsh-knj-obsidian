@@ -1,0 +1,4 @@
+# dsh-client-demo bundle patch
+- insert:
+    - id: dsh-client-demo
+      name: 'dsh-client-demo'

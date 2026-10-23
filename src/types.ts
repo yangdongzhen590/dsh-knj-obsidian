@@ -88,6 +88,18 @@ export interface VaultProvider {
   activateRoot?(root: string): VaultRecord
   attachRoot?(root: string, name?: string): VaultRecord
   removeVault?(id: string): boolean
+  /**
+   * 会话级绑定（P0，2026-10-21）：按会话 cwd 只读解析库（零写盘；未注册/无 .wiki 返回 undefined）。
+   * 工具侧与触发层（trigger.ts 的 L0）共用同一语义：**给了 cwd 解析不出库绝不回退全局当前库**——
+   * 回退正是「在 A 工作区问 A 的事、被 B 库答偏」的来源（实测见 .wiki/concepts/会话级知识库绑定）。
+   */
+  readonlyVaultForRoot?(root: string): { store: VaultStoreLike; name: string } | undefined
+  /**
+   * 为某个根确保库可写（wiki_init 专用）：注册（**不抢占全局当前库**）+ ensure 脚手架。
+   * 与 attachRoot 的区别：attach 是用户显式动作、会把当前库切过去；本方法服务于
+   * 「会话在自己工作区里初始化库」，不应改变别的会话/UI 看到的当前库。
+   */
+  ensureVaultAt?(root: string): VaultStoreLike
 }
 
 /**

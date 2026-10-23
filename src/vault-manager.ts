@@ -252,8 +252,8 @@ export class VaultManager implements VaultProvider {
     return rec
   }
 
-  /** 只登记进注册表（零写盘）：未注册目录的自动发现路径用。 */
-  private registerRoot(root: string, name?: string): VaultRecord {
+  /** 只登记进注册表（零写盘）：未注册目录的自动发现路径用。makeCurrent=false 供 ensureVaultAt（不抢占全局当前库）。 */
+  private registerRoot(root: string, name?: string, makeCurrent = true): VaultRecord {
     const r = resolve(root)
     const removed = this.registry.removedRoots ?? []
     if (removed.some((x) => resolve(x) === r)) {
@@ -263,9 +263,24 @@ export class VaultManager implements VaultProvider {
     if (already) return already
     const rec: VaultRecord = { id: vaultIdOf(r), name: name?.trim() || basename(r) || r, root: r, source: 'workspace' }
     this.registry.vaults.push(rec)
-    this.registry.currentVaultId = rec.id
+    if (makeCurrent) this.registry.currentVaultId = rec.id
     this.persist()
     return rec
+  }
+
+  /**
+   * 会话级绑定（P0）：为某个根确保库可写——注册（不抢占全局当前库）+ ensure 脚手架。
+   *
+   * wiki_init 在会话工作区里初始化库时用：注册是必要的（否则边栏看不到、下次启动种子也不含它），
+   * 但**绝不**像 attachRoot/registerRoot 默认那样把 currentVaultId 切过去——那是全局单值，
+   * 切了就会把其它工作区会话（以及依赖 currentReadonly 的 UI 路径）一起带偏，
+   * 正是 [[会话级知识库绑定]] 记录的「内存/磁盘不一致」家族问题的另一半。
+   */
+  ensureVaultAt(root: string): VaultStore {
+    const r = resolve(root)
+    const existing = this.registry.vaults.find((v) => resolve(v.root) === r)
+    if (!existing) this.registerRoot(r, undefined, false)
+    return this.storeFor(r, true)
   }
 
   attachRoot(root: string, name?: string): VaultRecord {

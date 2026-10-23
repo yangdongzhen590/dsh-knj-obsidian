@@ -28,12 +28,19 @@ test('WikiSidebar 含图谱入口与经 openNote 打开笔记（openTab 由 inde
   assert.match(text, /openNote/)
 })
 
-test('index.ts 注册工作台标签 type', () => {
+test('index.ts 把「知识库」+「笔记」都注册进 0.2 原生右侧栏', () => {
   const idx = join(ROOT, 'src/client/index.ts')
   assert.ok(existsSync(idx), 'src/client/index.ts 应存在')
   const text = readFileSync(idx, 'utf8')
+  // 两个 tab 类型：id/kind 同值，内容面板挂在 keyed seat `sidebar.right.pane.tab`（key = id）。
+  assert.match(text, /dsh-knj-obsidian:wiki/)
   assert.match(text, /dsh-knj-obsidian:note/)
-  assert.match(text, /registerTab/)
+  assert.match(text, /sidebar\.right\.pane\.tab/)
+  // 笔记由点击打开：openNote → sidebarRight.openTab(kind, { params }) 带 id|category；
+  // 页签标题走 `sidebar.right.pane.tab.title` seat 从 navigation.params 读回。
+  assert.match(text, /\.openTab\(NOTE_TAB, \{ params:/)
+  assert.match(text, /sidebar\.right\.pane\.tab\.title/)
+  assert.match(text, /openNote/)
 })
 
 test('GraphView 用户内容一律经 esc() 转义——含 <script> 的标题不会裸拼进 innerHTML', () => {

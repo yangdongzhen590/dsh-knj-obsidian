@@ -79,8 +79,13 @@ function userEvent(seq, text, kind = 'user') {
 function toolCall(seq, name, args, turn = 1) {
   return { type: 'tool/call', seq, data: { callId: 'call_' + seq, name, arguments: JSON.stringify(args), turn } }
 }
-/** 本插件自己注入过的提醒（落盘后回放时会出现在事件流里）。 */
+/** 本插件自己注入过的提醒（落盘后回放时会出现在事件流里）。
+ *  DSH 0.2.x 会话 V4 的物理行准入拒绝 `kind: 'plugin'`，所以新日志写 producer-owned 的包名 kind。 */
 function injectedNoticeEvent(seq, summary) {
+  return { type: 'user/message', seq, data: { source: { kind: 'dsh-knj-obsidian', form: 'notice', summary } } }
+}
+/** 升级前写进旧日志的原始包装（V3→V4 迁移会把它升格为 plugin:<name>；进程内的旧数组仍可能是原样）。 */
+function legacyInjectedNoticeEvent(seq, summary) {
   return { type: 'user/message', seq, data: { source: { kind: 'plugin', plugin: 'dsh-knj-obsidian', form: 'notice', summary } } }
 }
 
@@ -233,7 +238,7 @@ function fakeAgent(events, { delegationDepth, cwd } = {}) {
   // L0：会话工作目录取自 SessionHeader.cwd（宿主契约）
   if (cwd !== undefined) session.header = { ...(session.header ?? {}), cwd }
   // inject 挂在 **agent** 上（不是 session 上）：宿主注入接口就是 agent.inject
-  // 真实宿主会把注入的消息落进会话日志（source.kind === 'plugin' 的 user/message）——
+  // 真实宿主会把注入的消息落进会话日志（producer-owned kind 的 user/message）——
   // 这正是 L1 二档/跨重启去重的判据来源，夹具必须还原这一步，否则测的不是真实链路。
   let seq = 10_000
   const inject = (m) => {
@@ -241,7 +246,7 @@ function fakeAgent(events, { delegationDepth, cwd } = {}) {
     events.push({
       type: 'user/message',
       seq: (seq += 1),
-      data: { source: { kind: 'plugin', plugin: 'dsh-knj-obsidian', form: 'notice', summary: m.summary } },
+      data: { source: { kind: 'dsh-knj-obsidian', form: 'notice', summary: m.summary } },
     })
   }
   return { injected, agent: { session, inject } }
@@ -556,11 +561,16 @@ test('纯函数：currentTurnOf / turnToolCalls / injectedNotices 的边界', ()
 
   const notices = injectedNotices([
     injectedNoticeEvent(1, CAPTURE_SUMMARY),
-    injectedNoticeEvent(2, taskSummaryOf(7)),
-    { type: 'user/message', seq: 3, data: { source: { kind: 'plugin', plugin: 'other-plugin', summary: '别的插件' } } },
-    userEvent(4, '人说的话'),
+    legacyInjectedNoticeEvent(2, taskSummaryOf(7)),
+    { type: 'user/message', seq: 3, data: { source: { kind: 'plugin:dsh-knj-obsidian', form: 'notice', summary: '知识库提示全文#7' } } },
+    { type: 'user/message', seq: 4, data: { source: { kind: 'plugin', plugin: 'other-plugin', summary: '别的插件' } } },
+    userEvent(5, '人说的话'),
   ])
-  assert.deepEqual([...notices].sort(), [CAPTURE_SUMMARY, taskSummaryOf(7)].sort(), '只认本插件注入的提醒摘要')
+  assert.deepEqual(
+    [...notices].sort(),
+    [CAPTURE_SUMMARY, taskSummaryOf(7), '知识库提示全文#7'].sort(),
+    '新形态（包名 kind）、迁移形态（plugin:<name>）、旧日志原样（kind:plugin）三种都要认；别的插件/用户消息不算',
+  )
 })
 
 // ---------------------------------------------------------------------------

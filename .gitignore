@@ -14,7 +14,16 @@ lib/
 .dsh-edit-review-archive.json
 .tmp-transcribe-work/
 
+# Chromium/crashpad 的崩溃上报日志：本机运行时产物，与插件代码无关。
+debug.log
+
 # 示例 demo 的构建产物（源码入库，产物由 `npm run build` 重建，避免每次改动都产生几百 KB 二进制 diff）
 examples/**/client-dist/
 examples/**/client/dist/
+
+# 0.2.x 迁移用的本机临时区：隔离 DSH_HOME、本地 npm/pnpm 缓存与打出的验证包。
+# 都不属于产品代码（隔离 home 里的 credentials 更是绝不能入库）。
+.tmp-migrate/
+.npm-cache/
+.pnpm-store/
 

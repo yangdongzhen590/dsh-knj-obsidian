@@ -76,6 +76,13 @@ export interface RetrievalCandidate {
   tier: WikiTier
   /** 页面 frontmatter 的 source（原始出处标识）：候选一路带着它，合成答案才追得回源头。 */
   source: string
+  /**
+   * 页面 frontmatter 的 summary（一句话摘要），只透传、不派生（磁盘上没有就没有）。
+   * 加它的动机（2026-10-21，session-26b6f056 评估）：wiki_query 的模型可见输出原先只有
+   * 「标题(分数)」，模型无法据此判断哪页值得展开，只能整页读（实测一次 14.7k 字符）。
+   * 摘要让候选自带「这页是什么」——与触发层 L1 一档的提示口径对齐。
+   */
+  summary?: string
 }
 
 export interface RetrievalResult {
@@ -487,6 +494,7 @@ function candidate(
     score: scoreOf(base, degree.get(e.id) ?? 0, tier),
     tier,
     source: e.page.source,
+    ...(e.page.summary?.trim() ? { summary: e.page.summary } : {}),
   }
 }
 

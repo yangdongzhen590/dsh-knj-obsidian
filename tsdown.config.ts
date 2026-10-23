@@ -8,15 +8,16 @@ import { defineConfig } from 'tsdown'
 
 const id = 'dsh-knj-obsidian'
 
-/** Externals resolved from the loader module table at runtime. */
-const CLIENT_EXTERNALS = [
-  'react',
-  'react/jsx-runtime',
-  'react-dom',
-  '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-runtime',
-  'dsh-better-sidebar',
-]
+/**
+ * Externals resolved from the loader module table at runtime.
+ *
+ * 只有 React 三件套:0.2 起插件的宿主能力(原生右侧栏的 slots / sidebarRightTabs /
+ * sidebarRight)都是运行时从 ctx 注入的服务,不再需要从 loader 表 require 宿主包。
+ * 历史上这里还留着 @deepseek-ai/dsh-client-ui-primitives、@deepseek-ai/dsh-client-runtime
+ * 与 dsh-better-sidebar —— 前两者属我未使用的 client 包(dsh-client-runtime 在 0.2 已不存在),
+ * 后者已在 2026-10-22 卸载,一并清掉;清掉后产物的 require 仍只有 react 三者(实测一致)。
+ */
+const CLIENT_EXTERNALS = ['react', 'react/jsx-runtime', 'react-dom']
 
 export default defineConfig({
   entry: { client: 'src/client/index.ts' },

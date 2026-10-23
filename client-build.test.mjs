@@ -19,20 +19,26 @@ test('client 构建产物存在且为 ModuleLoader 工厂', () => {
 test('package.json 声明 client 入口与构建脚本', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.dsh.client.platform, 'web')
-  // 服务名是 betterSidebar（dsh-better-sidebar 源码 ctx.provide("betterSidebar")），
-  // 不是包名 dsh-better-sidebar：inject 写包名会让插件因找不到服务而永久 pending
-  assert.ok(pkg.dsh.client.inject.includes('betterSidebar'))
+  // 0.2 迁移后不再依赖 dsh-better-sidebar：客户端的宿主依赖改为在 src/client/index.ts
+  // 里用 `export const inject` 按**服务名**声明（slots / sidebarRightTabs 由
+  // @deepseek-ai/dsh-client-ui-sidebar-right 提供）。包级 inject 保持空数组，
+  // 避免出现指向已卸载插件的悬空引用。
+  assert.ok(!pkg.dsh.client.inject.includes('betterSidebar'), '不应再引用已卸载的 betterSidebar 服务')
+  const src = readFileSync(join(ROOT, 'src/client/index.ts'), 'utf8')
+  assert.match(src, /export const inject = \['slots', 'sidebarRightTabs', 'sidebarRight'\]/, '硬依赖须按服务名声明')
   assert.equal(pkg.exports['./client'].default, './client/client.js')
   assert.ok(pkg.scripts['build:client'])
 })
 
-test('registerTab 描述符使用宿主 TabDescriptor.component 字段（dsh-better-sidebar 0.14.0 无 render 字段）', () => {
-  // 宿主 Sidebar.tsx 渲染 descriptor.component；传 render 会被静默忽略，
-  // 标签页打开时因组件缺失而报错。源码与构建产物都必须用 component。
+test('原生右侧栏契约：类型注册 + keyed 内容面板（不再使用 registerTab/component）', () => {
+  // 0.2 的 ui-sidebar-right 分两段：静态面走 sidebarRightTabs.register（id/kind/title/guide），
+  // 内容走 keyed seat `sidebar.right.pane.tab`（key = 类型定义的 id）。
+  // better-sidebar 的 registerTab({component}) 已不存在，误用不会报错、只会什么都不显示。
   const src = readFileSync(join(ROOT, 'src/client/index.ts'), 'utf8')
-  assert.match(src, /component:\s*\(\)\s*=>/, 'registerTab 必须以 component 字段提供组件')
-  assert.doesNotMatch(src, /render:/, 'TabDescriptor（0.14.0）没有 render 字段')
+  assert.match(src, /ctx\.sidebarRightTabs/, '须使用原生右侧栏类型注册表')
+  assert.match(src, /\.register\(\{/, '须注册 tab 类型定义')
+  assert.match(src, /slots\.inject\('sidebar\.right\.pane\.tab'/, '须在 keyed seat 上注册内容面板')
+  assert.doesNotMatch(src, /registerTab/, '不应再使用 better-sidebar 的 registerTab')
   const bundle = readFileSync(join(ROOT, 'client/client.js'), 'utf8')
-  assert.match(bundle, /component:/, '构建产物必须携带 component 字段')
-  assert.doesNotMatch(bundle, /render:/, '构建产物不得使用 render 字段')
+  assert.match(bundle, /sidebar\.right\.pane\.tab/, '构建产物必须携带原生 seat 名')
 })
