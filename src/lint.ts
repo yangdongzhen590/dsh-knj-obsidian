@@ -44,6 +44,39 @@ export interface LintReport {
 
 const WIKILINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g
 
+/**
+ * 剥掉 Markdown 的代码区域（围栏代码块 + 行内代码），返回仅剩「正文」的文本。
+ *
+ * 为什么必须剥（2026-10-24 实测）：知识页正文里会用 `[[wikilink]]` 这种**示例字面量**
+ * 讲"链接长什么样"，直接对正文跑 WIKILINK_RE 会把它当成真链接，于是 lint 报出
+ * 不存在的断链（本库当时报 3 条，全是同一个假目标）。诊断工具撒谎比不报更贵——
+ * 它会让人去修一个不存在的问题。
+ *
+ * 取舍：只处理围栏代码块与行内代码，**不**处理四空格缩进代码块——宁少剥不多剥，
+ * 剥过头会把真断链藏起来。未闭合的围栏视为「其后全是代码」。
+ */
+export function stripCodeRegions(body: string): string {
+  const kept: string[] = []
+  let fenceChar: string | null = null
+  for (const line of body.split('\n')) {
+    const fence = /^\s{0,3}(`{3,}|~{3,})/.exec(line)
+    if (fenceChar === null) {
+      if (fence) {
+        fenceChar = fence[1][0]
+        continue
+      }
+      // 行内代码：去除 `…` 段；不跨行匹配
+      kept.push(line.replace(/`[^`]*`/g, ''))
+    } else if (fence && fence[1][0] === fenceChar) {
+      fenceChar = null // 闭合围栏，该行本身也是围栏标记，丢弃
+    }
+  }
+  return kept.join('\n')
+}
+
+/** 库根索引页的 id：它天然没有入链，不是「没织好」，不计孤儿。 */
+const INDEX_PAGE_ID = 'index'
+
 /** 业务标签：排除系统标签组（visibility/*）——它们不计上限、不参与别名映射、不算未知。 */
 function domainTags(tags: readonly string[]): string[] {
   return tags.filter((t) => !isSystemTag(t))
@@ -60,7 +93,9 @@ function domainTags(tags: readonly string[]): string[] {
  * - 判定优先级：规范词 > 别名 > 未知。
  */
 export function auditTags(store: VaultStore, taxonomy: Taxonomy | null = loadTaxonomy(store)): TagAudit {
-  const pages = store.listPages()
+  // listPagesReadonly：lint 是**只读**诊断，不能因为跑一次检查就给空壳库建出脚手架
+  // （listPages() 内部会 ensure()，这正是"看一眼就建库"的来源之一）。
+  const pages = store.listPagesReadonly()
   const unknownPages = new Map<string, string[]>()
   const aliasPages = new Map<string, { canonical: string; pages: string[] }>()
   const overTagged: TagAudit['overTagged'] = []
@@ -116,7 +151,7 @@ export function auditTags(store: VaultStore, taxonomy: Taxonomy | null = loadTax
 }
 
 export function lintVault(store: VaultStore, opts: LoadTaxonomyOptions = {}): LintReport {
-  const pages = store.listPages()
+  const pages = store.listPagesReadonly()
   const ids = new Set(pages.map((p) => p.id))
   const incoming = new Map<string, string[]>()
   const outCount = new Map<string, number>()
@@ -133,7 +168,7 @@ export function lintVault(store: VaultStore, opts: LoadTaxonomyOptions = {}): Li
     if (!page.created || !page.source || !page.confidence) {
       missingFrontmatter.push(p.id)
     }
-    const body = page.body
+    const body = stripCodeRegions(page.body)
     let out = 0
     for (const m of body.matchAll(WIKILINK_RE)) {
       out += 1
@@ -155,6 +190,8 @@ export function lintVault(store: VaultStore, opts: LoadTaxonomyOptions = {}): Li
   // - graph-engine 为「严格语义」（!hasOut && !hasIn 才灰显）——服务视觉呈现，仅有入链的页不是视觉孤点。
   const orphans = pages
     .filter((p) => {
+      // 索引页天然无入链，它是库的入口而不是图谱里的节点，报成孤儿只会是噪声。
+      if (p.id === INDEX_PAGE_ID) return false
       const hasOut = (outCount.get(p.id) ?? 0) > 0
       const hasIn = (incoming.get(p.id) ?? []).length > 0
       return !hasOut || !hasIn

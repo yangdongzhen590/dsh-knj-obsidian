@@ -1283,9 +1283,32 @@ export function resolveSessionVault(
 // 它可见、不阻断、不改用户的流程——这是 L1/L5 的强度上限（remind 档）。
 // ---------------------------------------------------------------------------
 
+/**
+ * 触发层的可观测日志出口。
+ *
+ * 为什么需要它（2026-10-24）：触发层所有注册都包在 try/catch 里（单条失败不得打断插件
+ * apply），于是"钩子没注册上"和"钩子挂上了但判据没命中"在日志上完全同形——后者永远
+ * 无法被证伪。可观测性不是加分项：一个从不说话的守卫，坏没坏只有它能告诉你。
+ */
+export type TriggerLog = (event: string, detail?: Record<string, unknown>) => void
+
+/** 默认日志：失败/异常走 warn，其余走 info；每次插件 apply 只产生个位数行。 */
+const defaultTriggerLog: TriggerLog = (event, detail) => {
+  const line = `[dsh-knj-obsidian] ${event}`
+  if (event.endsWith('-failed') || event.endsWith('-error')) console.warn(line, detail ?? {})
+  else console.info(line, detail ?? {})
+}
+
+/** 异常 → 一行可读文本（日志里只留结论，不留 stack）。 */
+function describeErrorDetail(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+}
+
 export interface TriggerDeps {
   /** 注入点：构造模型可见的提醒消息（默认懒加载宿主提供的 @deepseek-ai/dsh-llm）。 */
   createNotice?: (text: string, summary: string) => unknown
+  /** 可观测日志出口（默认 console；测试注入以避免污染输出）。 */
+  log?: TriggerLog
 }
 
 export interface TriggerHost {
@@ -1351,6 +1374,7 @@ export function installTrigger(
   deps: TriggerDeps = {},
 ): () => void {
   const states = new WeakMap<object, TriggerState>()
+  const log = deps.log ?? defaultTriggerLog
 
   const createNotice = deps.createNotice ?? (async (text: string, summary: string) => {
     // 变量说明符：@deepseek-ai/dsh-llm 是宿主提供的包（运行时由 profiles/node_modules 解析到），
@@ -1403,12 +1427,16 @@ export function installTrigger(
     return false
   }
 
-  /** 注册监听；单条注册失败不得冒泡（否则会打断插件 apply 之后的链路）。 */
-  function register(event: string, handler: unknown): void {
+  /** 注册监听；单条注册失败不得冒泡（否则会打断插件 apply 之后的链路），但必须留痕。 */
+  function register(event: string, handler: unknown): boolean {
     try {
       ctx.on(event as never, handler as never)
-    } catch {
-      // 宿主拒绝注册：触发层缺席，插件其余能力照常
+      log('event-registered', { event })
+      return true
+    } catch (error) {
+      // 宿主拒绝注册：触发层缺席，插件其余能力照常——但这次缺席必须能事后看见。
+      log('event-register-failed', { event, error: describeErrorDetail(error) })
+      return false
     }
   }
 
@@ -1554,7 +1582,7 @@ export function installTrigger(
   //
   // 写入闸先判：它管的是「知识库写入必须由用户决定」这条原则（不受 KNJ_OBSIDIAN_GATE 影响），
   // 而 L2 管的是「改高危文件前先查库」。
-  register('tools/pre-execute', async (exec: ToolExecutionLike, next: () => Promise<unknown>) => {
+  const l2Registered = register('tools/pre-execute', async (exec: ToolExecutionLike, next: () => Promise<unknown>) => {
     const decision = await next()
     if (shutdownCheck(exec.agent)) return decision
     try {
@@ -1565,10 +1593,15 @@ export function installTrigger(
       const guard = await gateDecision(exec, mode)
       if (!guard) return decision
       return guard
-    } catch {
-      return decision // 门禁任何异常都不得阻断工具（触发层是增益，不是依赖）
+    } catch (error) {
+      // 门禁异常不阻断工具（触发层是增益，不是依赖），但绝不能静默：
+      // 静默的 catch 会让"门坏了"和"门没命中"永远同形，这正是它无法被证伪的原因。
+      log('l2-error', { error: describeErrorDetail(error) })
+      return decision
     }
   })
+  // 一次一行：把"钩子挂上了没有"与"当前档位"钉在日志里，作为「未触发」的可对照基线。
+  log('l2-status', { registered: l2Registered, mode: gateModeOf() })
 
   /**
    * 写入闸：未经用户授权的知识库写入被拒（每会话一次；重试即放行）。
@@ -1614,8 +1647,10 @@ export function installTrigger(
     if (mode === 'block' && !state.gateDeniedFor.has(target)) {
       // 拦一次；模型显式重试同一路径即放行——拦截的目的是让它先查库，不是堵死它
       state.gateDeniedFor.add(target)
+      log('l2-block', { target })
       return { kind: 'deny', reason: renderGateReminder(target) }
     }
+    log('l2-warn', { target })
     exec.agent?.inject?.(await createNotice(renderGateReminder(target), GATE_SUMMARY))
     return undefined
   }

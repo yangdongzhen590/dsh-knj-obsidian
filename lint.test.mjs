@@ -1,7 +1,7 @@
 // lint.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VaultStore } from './lib/vault-store.js'
@@ -47,6 +47,56 @@ test('别名/锚点语法出链计入 hasOut，不产生假孤儿', (t) => {
   assert.ok(!report.orphans.includes('a'), `a 不应是孤儿，实际 ${JSON.stringify(report.orphans)}`)
   assert.deepEqual(report.orphans.sort(), ['b', 'c'])
   assert.deepEqual(report.brokenLinks, [])
+})
+
+test('行内代码里的 [[wikilink]] 是示例字面量，不算断链', (t) => {
+  const { dir, store } = makeStore()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  // 复现 2026-10-24 实测：能力页正文用 `[[wikilink]]` 讲"链接长什么样"，
+  // 旧实现直接对正文跑 WIKILINK_RE，把它当成真链接 → 报出不存在的断链。
+  store.writePage({ id: 'a', title: 'A', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '链接写作 `[[wikilink]]`；真链接是 [[b]]' })
+  store.writePage({ id: 'b', title: 'B', category: 'entities', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: 'ok' })
+  const report = lintVault(store)
+  assert.deepEqual(report.brokenLinks, [], '行内代码里的字面量不应产生断链')
+})
+
+test('围栏代码块里的 [[x]] 不算断链', (t) => {
+  const { dir, store } = makeStore()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.writePage({ id: 'a', title: 'A', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '示例：\n\n```md\n[[ghost]]\n```\n\n真链接 [[b]]' })
+  store.writePage({ id: 'b', title: 'B', category: 'entities', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: 'ok' })
+  const report = lintVault(store)
+  assert.deepEqual(report.brokenLinks, [], '围栏代码块里的内容不应产生断链')
+})
+
+test('代码之外的断链仍必须报（防止剥代码剥过头）', (t) => {
+  const { dir, store } = makeStore()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.writePage({ id: 'a', title: 'A', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '正文 [[ghost]] 是真断链；行内 `[[ghost2]]` 不是' })
+  const report = lintVault(store)
+  assert.deepEqual(report.brokenLinks, [{ from: 'a', target: 'ghost' }])
+})
+
+test('index 页不计孤儿（索引天然无入链）', (t) => {
+  const { dir, store } = makeStore()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.writePage({ id: 'index', title: 'Index', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '索引页，不链任何页' })
+  store.writePage({ id: 'a', title: 'A', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '见 [[b]]' })
+  store.writePage({ id: 'b', title: 'B', category: 'entities', tags: [], source: 's', confidence: 'extracted', created: 'c', updated: 'u', body: '回到 [[a]]' })
+  const report = lintVault(store)
+  assert.ok(!report.orphans.includes('index'), `index 不应计入孤儿，实际 ${JSON.stringify(report.orphans)}`)
+  assert.deepEqual(report.orphans, [], 'a/b 有出有入，不应是孤儿')
+})
+
+test('lint 是只读操作：不给未初始化的库建 .wiki', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-obsidian-lint-ro-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const store = new VaultStore(dir)
+  assert.equal(existsSync(join(dir, '.wiki')), false, '夹具前提：目录里还没有 .wiki')
+  const report = lintVault(store)
+  assert.equal(report.pageCount, 0)
+  // 旧实现走 listPages()（内部 ensure()），一次只读 lint 就凭空建出脚手架。
+  assert.equal(existsSync(join(dir, '.wiki')), false, 'lint 不应创建 .wiki')
 })
 
 test('无 frontmatter 的页面被 lint 标记缺 frontmatter', (t) => {

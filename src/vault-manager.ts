@@ -154,8 +154,21 @@ export class VaultManager implements VaultProvider {
     }))
   }
 
+  /** 库是否已初始化（磁盘上已有 `.wiki`）。注册 ≠ 建库：初始化只由显式动作触发。 */
+  private isInitialized(root: string): boolean {
+    return existsSync(join(root, '.wiki'))
+  }
+
   currentRecord(): VaultRecord | null {
-    return this.find(this.registry.currentVaultId) ?? this.registry.vaults[0] ?? null
+    const current = this.find(this.registry.currentVaultId) ?? this.registry.vaults[0] ?? null
+    if (!current) return null
+    // 当前库已初始化 → 行为与改前完全一致，不因别的库存在而漂移。
+    if (this.isInitialized(current.root)) return current
+    // 当前库还是空壳时，优先落到**另一个已初始化**的库：否则边栏与蒸馏启动器会指向
+    // 一个没有任何内容的壳（2026-10-13 实测的"答偏"）。全都未初始化时仍返回当前库，
+    // 让"先初始化"的显式动作有落点。
+    const initialized = this.registry.vaults.find((v) => v.id !== current.id && this.isInitialized(v.root))
+    return initialized ?? current
   }
 
   /** 按根取复用的 VaultStore（首次创建时可选 ensure 脚手架）。 */
@@ -176,7 +189,9 @@ export class VaultManager implements VaultProvider {
       // 防御：seed 后至少存在 cwd 库；仍兜底直接以 cwd 建库
       return this.storeFor(this.opts.cwdRoot, true)
     }
-    return this.storeFor(rec.root, true)
+    // 不隐式 scaffold：只有已初始化的库才 ensure（幂等）。空壳库的初始化是**显式动作**
+    // （wiki_init / UI「初始化」），写路径则由 VaultStore.writePage 自行 ensure。
+    return this.storeFor(rec.root, this.isInitialized(rec.root))
   }
 
   /** 只读视图：返回复用 store，绝不 ensure()/mkdir（GET 端点零写副作用）。 */

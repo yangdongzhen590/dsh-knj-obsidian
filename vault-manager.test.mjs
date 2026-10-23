@@ -143,3 +143,29 @@ test('listVaults 附带 pageCount（只读，不写盘）', (t) => {
   const after = readFileSync(join(s.cwd, '.wiki', '.manifest.json'), 'utf8')
   assert.equal(before, after, 'listVaults 不应改动磁盘')
 })
+
+test('currentRecord 优先已初始化的库（当前库是空壳时不返回空壳）', (t) => {
+  const s = setup(t, ['proj-a'])
+  const initialized = join(s.dir, 'proj-a')
+  mkdirSync(join(initialized, '.wiki'), { recursive: true })
+  const m = makeManager(s)
+  // 种子把当前库设为 cwd（此刻未初始化），而 proj-a 已初始化 → 应返回 proj-a
+  assert.equal(existsSync(join(s.cwd, '.wiki')), false, '夹具前提：cwd 库未初始化')
+  assert.equal(m.currentRecord().root, initialized)
+})
+
+test('当前库已初始化时 currentRecord 行为不变（不跳到别的库）', (t) => {
+  const s = setup(t, ['proj-a'])
+  mkdirSync(join(s.dir, 'proj-a', '.wiki'), { recursive: true })
+  mkdirSync(join(s.cwd, '.wiki'), { recursive: true })
+  const m = makeManager(s)
+  assert.equal(m.currentRecord().root, s.cwd, '当前库已初始化时应原样返回')
+})
+
+test('全部库都未初始化时，current() 不会凭空建库', (t) => {
+  const s = setup(t)
+  const m = makeManager(s)
+  assert.equal(existsSync(join(s.cwd, '.wiki')), false, '夹具前提：还没有 .wiki')
+  m.current()
+  assert.equal(existsSync(join(s.cwd, '.wiki')), false, 'current() 不应隐式 scaffold')
+})

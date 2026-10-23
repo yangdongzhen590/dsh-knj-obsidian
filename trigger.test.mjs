@@ -1249,6 +1249,76 @@ test('L2 接线：默认 off 不说话；warn 档同任务同路径只提醒一�
   assert.equal(agent2.injected.length, 0, '本任务查过库 → 门不说话')
 })
 
+test('L2 可观测性：注册成功时留 l2-status（含 mode），失败时留 event-register-failed', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const provider = { currentReadonly: () => store }
+
+  // 1) 正常注册：应能看出"钩子挂上了、只是模式为 off"——这是"未触发"与"没注册上"的分界
+  const okLines = []
+  installTrigger(fakeHost(), provider, {
+    createNotice: async () => ({}),
+    log: (event, detail) => okLines.push({ event, detail }),
+  })
+  const status = okLines.find((l) => l.event === 'l2-status')
+  assert.ok(status, `应记录 l2-status，实际 ${JSON.stringify(okLines.map((l) => l.event))}`)
+  assert.equal(status.detail.registered, true)
+  assert.equal(status.detail.mode, 'off', '默认档位应如实记录')
+  assert.equal(okLines.filter((l) => l.event === 'event-register-failed').length, 0)
+
+  // 2) 宿主拒绝注册 tools/pre-execute：失败必须有独立日志，且 l2-status 标成未注册
+  const failLines = []
+  const refusingHost = {
+    on: (event) => {
+      if (event === 'tools/pre-execute') throw new Error('host refuses this event')
+      return undefined
+    },
+  }
+  installTrigger(refusingHost, provider, {
+    createNotice: async () => ({}),
+    log: (event, detail) => failLines.push({ event, detail }),
+  })
+  const failure = failLines.find((l) => l.event === 'event-register-failed')
+  assert.ok(failure, `注册失败必须有日志，实际 ${JSON.stringify(failLines.map((l) => l.event))}`)
+  assert.equal(failure.detail.event, 'tools/pre-execute')
+  assert.match(failure.detail.error, /refuses this event/)
+  const failedStatus = failLines.find((l) => l.event === 'l2-status')
+  assert.equal(failedStatus?.detail.registered, false, 'l2-status 必须标出未注册')
+})
+
+test('L2 可观测性：门命中留 l2-warn，同路径不重复记', async (t) => {
+  const ws = makeWorkspace(t, 'gate-log')
+  const saved = process.env.KNJ_OBSIDIAN_GATE
+  process.env.KNJ_OBSIDIAN_GATE = 'warn'
+  t.after(() => {
+    if (saved === undefined) delete process.env.KNJ_OBSIDIAN_GATE
+    else process.env.KNJ_OBSIDIAN_GATE = saved
+  })
+  ws.store.writePage({
+    id: 'p1', title: 'T1', category: 'concepts', tags: ['t'], source: 's', confidence: 'extracted', created: NOW, updated: NOW,
+    body: 'src/core/engine.ts 是核心。',
+  })
+  ws.store.writePage({
+    id: 'p2', title: 'T2', category: 'concepts', tags: ['t'], source: 's', confidence: 'extracted', created: NOW, updated: NOW,
+    body: 'src/core/engine.ts 是核心。',
+  })
+  const provider = { currentReadonly: () => undefined, readonlyVaultForRoot: (r) => ws.manager.readonlyVaultForRoot(r) }
+  const target = join(ws.dir, 'src', 'core', 'engine.ts')
+  const lines = []
+  const host = fakeHost()
+  installTrigger(host, provider, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log: (event, detail) => lines.push({ event, detail }),
+  })
+  const agent = fakeAgent([userEvent(1, '改一下核心引擎')], { cwd: ws.dir })
+  await preStep(host, agent.agent)
+  await gateExecute(host, agent.agent, 'edit', { file_path: target })
+  const warns = lines.filter((l) => l.event === 'l2-warn')
+  assert.equal(warns.length, 1, `门命中应记一次 l2-warn，实际 ${JSON.stringify(lines.map((l) => l.event))}`)
+  await gateExecute(host, agent.agent, 'edit', { file_path: target })
+  assert.equal(lines.filter((l) => l.event === 'l2-warn').length, 1, '同一路径同任务不重复记')
+})
+
 test('L2 接线：block 档拦一次（给理由），同一路径显式重试即放行', async (t) => {
   const ws = makeWorkspace(t, 'gate-block')
   const saved = process.env.KNJ_OBSIDIAN_GATE
