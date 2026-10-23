@@ -1312,6 +1312,7 @@ export interface TriggerDeps {
 }
 
 export interface TriggerHost {
+  on(event: 'agent/created', handler: (payload: { agent?: AgentLike }) => void): unknown
   on(event: 'agent/session-start', handler: (payload: { agent?: AgentLike }) => void): unknown
   on(event: 'agent/pre-step', handler: (
     payload: { agent?: AgentLike },
@@ -1445,7 +1446,7 @@ export function installTrigger(
   // ⚠️ 必须 await createNotice：它是 async 的（默认实现要动态 import 宿主 llm 包）。
   // 漏了 await 会把**一个 Promise**当作消息注入——宿主签名是同步 `=> void`，不会报错，
   // 表现为「注入了一条空消息」，是那种只会在端到端才暴露的静默失败（已由用例钉死）。
-  register('agent/session-start', async ({ agent }: { agent?: AgentLike }) => {
+  const injectVaultIdentity = async ({ agent }: { agent?: AgentLike }): Promise<void> => {
     if (shutdownCheck(agent)) return
     if (!vaultIdentityEnabled()) return
     try {
@@ -1458,7 +1459,14 @@ export function installTrigger(
     } catch {
       // L0 任何异常都不得影响主流程
     }
-  })
+  }
+
+  // DSH 0.2 的真实事件是 `agent/created`（宿主用 ctx.serial 等待型发射，载荷 { agent, source }）；
+  // 它的 agent/* 事件表里**没有** session-start，只挂后者会让整个 L0 静默失效
+  // （2026-10-24 实测：同一工作区两个会话的「知识库身份」注入计数均为 0，而 L1 提示正常——
+  //  正是这种「注册成功但永不触发」的静默失败）。legacy 事件保留给 0.1.x 宿主。
+  register('agent/created', injectVaultIdentity)
+  register('agent/session-start', injectVaultIdentity)
 
   // ---- L1 一档：新任务 → 命中或语义兜底 → 提示；二档：被忽略 → 追投正文（见 turn-stopping） ----
   register('agent/pre-step', async ({ agent }: { agent?: AgentLike }, next: () => Promise<unknown>) => {

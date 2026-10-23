@@ -647,7 +647,7 @@ test('L0 接线：会话工作区没有库 → 不得回退到别人的库（宁
   assert.equal(existsSync(join(bare, '.wiki')), false, '只读解析绝不建库（L0 的硬契约）')
 })
 
-test('L0 接线：session-start 注入库身份；空库不注入；resume 不重复注入', async (t) => {
+test('L0 接线：agent/created 注入库身份（0.2 真实事件）；legacy session-start 保留；空库不注入；resume 不重复', async (t) => {
   const ws = makeWorkspace(t, 'identity')
   seed(ws.store)
   const empty = makeVault()
@@ -656,14 +656,17 @@ test('L0 接线：session-start 注入库身份；空库不注入；resume 不�
   const provider = { currentReadonly: () => undefined, readonlyVaultForRoot: (root) => ws.manager.readonlyVaultForRoot(root) }
   const host = fakeHost()
   installTrigger(host, provider, { createNotice: async (text, summary) => notice(text, summary) })
-  const start = host.handlers.get('agent/session-start')
-  assert.ok(start, 'L0 必须挂 agent/session-start（宿主文档：这里就是 seed 上下文的官方位置）')
+  // 2026-10-24 实测：DSH 0.2 的 agent/* 事件表里只有 agent/created，没有 session-start——
+  // 只挂 session-start 会让整个 L0 静默失效（本工作区两个会话的身份注入计数都是 0）。
+  const created = host.handlers.get('agent/created')
+  assert.ok(created, 'L0 必须挂 agent/created（0.2 宿主真实事件，载荷 { agent }）')
+  assert.ok(host.handlers.get('agent/session-start'), 'legacy：0.1.x 的 session-start 仍保留')
 
   // handler 是 async（内部必须 await createNotice）→ 触发后要等一个微任务再断言，
   // 否则断到的是「还没注入」。这个坑本身值得留在注释里：同步签名的宿主钩子里漏 await，
   // 结果是把一个 Promise 当消息注进去（宿主不会报错）。
   const first = fakeAgent([], { cwd: ws.dir })
-  await start({ agent: first.agent })
+  await created({ agent: first.agent })
   assert.equal(first.injected.length, 1, '有页面的库应在会话开始告知身份')
   assert.match(first.injected[0].text, /知识库/)
   assert.match(first.injected[0].text, /2 页/, '身份块要给出页数（让模型知道库里有货）')
@@ -671,14 +674,14 @@ test('L0 接线：session-start 注入库身份；空库不注入；resume 不�
 
   // resume：日志里已有身份块 → 不重复注入
   const resumed = fakeAgent([injectedNoticeEvent(1, VAULT_IDENTITY_SUMMARY)], { cwd: ws.dir })
-  start({ agent: resumed.agent })
+  created({ agent: resumed.agent })
   assert.equal(resumed.injected.length, 0, '身份块每会话一次，重启/恢复不重复')
 
   // 空库：不注入（旧原则——宁可不说是默认行为）
   const hostEmpty = fakeHost()
   installTrigger(hostEmpty, { currentReadonly: () => empty.store }, { createNotice: async (text, summary) => notice(text, summary) })
   const blank = fakeAgent([])
-  hostEmpty.handlers.get('agent/session-start')({ agent: blank.agent })
+  hostEmpty.handlers.get('agent/created')({ agent: blank.agent })
   assert.equal(blank.injected.length, 0, '空库不注入身份（不制造「有货」的错觉）')
 })
 
