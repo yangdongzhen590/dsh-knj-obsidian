@@ -503,7 +503,7 @@ v12 按对抗审查结论给「知识蒸馏」补上可回滚与可评估能力�
 npm ci --legacy-peer-deps --ignore-scripts   # 装依赖：两个旗标缺一不可（见下）
 npm run check   # typecheck + build（服务端）
 npm run check:client && npm run build:client   # 客户端类型检查 + bundle
-node --test *.test.mjs   # 全部测试（469 例）
+node --test *.test.mjs   # 全部测试（515 例）
 ```
 
 > **为什么装依赖必须带这两个旗标**（干净机器实测，缺一必失败）：
@@ -518,32 +518,52 @@ node --test *.test.mjs   # 全部测试（469 例）
 > 另注意：`npm install --no-save @tobilu/qmd` 对本仓是**空操作**（qmd 是 optional peer，npm 认为已满足）。
 
 > 已知基线：`wiki_ingest` 的 `relatedCheck` WIP 已收尾（`src/tools.ts` 的输出与
-> `ingest-delta.test.mjs` / `tools.test.mjs` 断言同步），2026-10-24 实测全量 469 例全绿。
+> `ingest-delta.test.mjs` / `tools.test.mjs` 断言同步），2026-10-25 实测全量 515 例全绿。
 
 ## 发版约定
 
-**版本号格式：`yy.mm.num`**（年后两位 + 月两位 + **当月递增两位序号**，从 `01` 起）。
+**版本号格式：`YYYY.M.D<N>`**（年.月.日 + 当日序号；序号从 0 起、**不带前导零**）。
 
 | 例子 | 含义 |
 |---|---|
-| `26.10.01` | 2026 年 10 月第 1 次发布 |
-| `26.10.02` | 同月第 2 次发布 |
-| `26.11.01` | 次月第 1 次发布（月份进位，序号重置） |
+| `2026.10.250` | 2026-10-25 第 0 次发布 |
+| `2026.10.251` | 同一天第 1 次发布 |
+| `2026.11.10` | 2026-11-01 第 0 次发布 |
+| `2026.11.11` | 2026-11-01 第 1 次发布 |
 
-为什么不用旧格式：历史版本是 `2026.10.215`（年.月.日+当日序号），日与序号混在一段里，
-同月内既看不出发布次序也容易和"日期"混淆。`yy.mm.num` 只保留三段、序号固定两位，
-同一月内的发布天然单调可排。
+**为什么不再用 `yy.mm.num`**（2026-10-25 实测踩坑）：npm 的 `latest` 在 semver 上必须严格递增。
+npm 最后一次以 latest 发布的版本是旧方案的 `2026.10.211`（major=2026），而 `26.10.2`（major=26）
+在 semver 上**更低**，`npm publish` 直接拒绝：
+
+```
+Cannot implicitly apply the "latest" tag because previously published version
+2026.10.211 is higher than the new version 26.10.2. You must specify a tag using --tag.
+```
+
+要恢复正常的 latest 推进，版本号必须大于 `2026.10.211`：
+
+- **10 月剩下的日子**：用 `2026.10.250` 起的「日+序号」（`250 > 211`）；
+- **11 月 1 日起**：月份段进位，`2026.11.x` 天然更大 —— 这时可以改用 `YYYY.MM.N`
+  （如 `2026.11.1`、`2026.11.2`），但**整月不要与 `YYYY.M.D<N>` 混用**；
+- `26.10.2` 这条支线留在 npm tag `v26line` 上（`npm i dsh-knj-obsidian@v26line`），不再进 latest。
+
+硬规则（semver 实测）：
+
+- ❌ 前导零（`2026.10.02` 会被 npm 自动纠正成 `2026.10.2`，仓库与 npm 就对不上了）；
+- ❌ 四段（`2026.10.25.1`）；❌ `-prerelease`（市场更新检测会判「无更新」）；❌ `+build`（不参与比较，npm 拒绝覆盖）；
+- 一天最多 10 次（序号 0–9），否则 `2026.10.2510 > 2026.10.260` 会破坏跨天排序。
 
 发版前必须全绿，四步一条不能少：
 
 ```bash
 npm run build && npm run build:client   # 服务端 + 客户端产物都要重建
-node --test *.test.mjs                  # 全量测试（当前 469 例）
+node --test *.test.mjs                  # 全量测试（当前 515 例）
 npm pack --dry-run                      # 确认 files 白名单里没有多余产物
 ```
 
-> 改版本号只需改 `package.json` 的 `version`；不要用 `npm version`（它会顺带建 tag/commit）。
-> npm 禁止覆盖已发布版本：同月再次发布就把 `num` 依次 +1。
+> 改版本号要**同时改两处**：`package.json` 的 `version`，以及客户端构建标记
+> `src/client/index.ts` 的 `CLIENT_BUILD`（面板底部会显示它，用来确认浏览器加载的是哪次构建）。
+> 不要用 `npm version`（它会顺带建 tag/commit）。npm 禁止覆盖已发布版本。
 
 ## License
 
