@@ -382,6 +382,291 @@ test('A6 接线：KNJ_OBSIDIAN_TRIGGER=off 时 L1/L5 都不注入，且**一次�
   assert.equal(providerCalls, 0, '开关关闭时不得检索（取库次数必须为 0）')
 })
 
+// ---------------------------------------------------------------------------
+// L1 可观测性（2026-10-24）：静默漏触发必须能在日志里现形
+//
+// 现场：session-283d4b68（scheduler 工作区，任务「knj-scheduler 里面能正常加载skill吗」）
+// 一档 0 次注入 → 二档连判定机会都没有 → 整条主动层在 62 步里一句话没说。
+// 而日志里只有 event-registered / l2-*，L1 的沉默与「钩子根本没挂上」依然同形，
+// 这正好违反了本文件自己的原则：一个从不说话的守卫，坏没坏只有它能告诉你。
+//
+// 契约：安装时留一条 `l1-status`；每个新任务若最终不注入，留一条 `l1-skip` 并写明
+// reason ∈ { no-store, cold-semantic, semantic-off, no-hits }（0 行为变化，纯观测）。
+// ---------------------------------------------------------------------------
+
+function collectLogs() {
+  const logs = []
+  return { logs, log: (event, detail) => logs.push({ event, detail: detail ?? {} }) }
+}
+
+test('L1 可观测：安装后必须留下 l1-status（注册成功 + 开关档位）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log,
+  })
+
+  const status = logs.find((l) => l.event === 'l1-status')
+  assert.ok(status, '安装后必须留下 l1-status——否则「没挂上」与「判据没命中」永远无法区分')
+  assert.equal(status.detail.registered, true, 'pre-step 钩子必须真的注册成功')
+  assert.equal(typeof status.detail.enabled, 'boolean', 'l1-status 要带上触发层开关档位')
+
+  // 命中注入的任务不得留下 l1-skip（skip 只记「该说而没说」）
+  const { agent, injected } = fakeAgent([userEvent(1, 'dsh-scheduler 的 cron 时区问题')])
+  await preStep(host, agent)
+  assert.equal(injected.length, 1)
+  assert.equal(logs.filter((l) => l.event === 'l1-skip').length, 0, '成功注入不算 skip')
+})
+
+test('L1 可观测：词面 0 命中且语义未热 → l1-skip(cold-semantic)', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+  // 前提：本进程从未调用过语义工具 → 该库的运行时必然未热
+  // （这正是 283d4b68 的真实现场：词面只命中 1 个词，语义兜底因为冷而静默）
+  const { warmSemanticRuntime } = await import('./lib/semantic-hits.js')
+  assert.equal(warmSemanticRuntime(resolvePath(store.wikiRoot)), null, '用例前提：语义运行时未热')
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log,
+  })
+
+  const { agent, injected } = fakeAgent([userEvent(1, '帮我把这张图片的尺寸改成 800x600')])
+  await preStep(host, agent)
+  assert.equal(injected.length, 0, '无命中必须静默（宁可不说是第一原则，不变）')
+
+  const skips = logs.filter((l) => l.event === 'l1-skip')
+  assert.equal(skips.length, 1, '每个新任务最多一条 l1-skip')
+  assert.equal(skips[0].detail.reason, 'cold-semantic', '冷语义导致的沉默必须能被识别')
+  assert.equal(skips[0].detail.lexical, 0, '要给出词面命中数，才能判断是不是门槛问题')
+  assert.equal(skips[0].detail.warm, false)
+  assert.equal(skips[0].detail.semanticTried, true)
+  assert.equal(skips[0].detail.taskSeq, 1)
+
+  // 同一任务的后续步骤不重复记：日志不能变成噪声
+  await preStep(host, agent)
+  await preStep(host, agent)
+  assert.equal(logs.filter((l) => l.event === 'l1-skip').length, 1, '同一任务只记一次')
+})
+
+test('L1 可观测：本会话解析不出库 → l1-skip(no-store)，仍不得回退全局库', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  // 给了 cwd 却没给 readonlyVaultForRoot：按 L0 契约必须判「无库」，绝不回退 currentReadonly()
+  installTrigger(host, { currentReadonly: () => store }, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log,
+  })
+
+  const { agent, injected } = fakeAgent([userEvent(1, 'dsh-scheduler 的 cron 时区问题')], { cwd: dir })
+  await preStep(host, agent)
+  assert.equal(injected.length, 0, '解析不出库时不得回退全局库（答偏的根源）')
+
+  const skip = logs.find((l) => l.event === 'l1-skip')
+  assert.ok(skip, '无库也必须留痕：否则「这个工作区没有库」会被误读成「库没用」')
+  assert.equal(skip.detail.reason, 'no-store')
+})
+
+test('L1 可观测：语义兜底被开关关闭 → l1-skip(semantic-off)', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  const saved = process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK
+  process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK = 'off'
+  t.after(() => {
+    if (saved === undefined) delete process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK
+    else process.env.KNJ_OBSIDIAN_SEMANTIC_FALLBACK = saved
+  })
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log,
+  })
+
+  const { agent, injected } = fakeAgent([userEvent(1, '帮我把这张图片的尺寸改成 800x600')])
+  await preStep(host, agent)
+  assert.equal(injected.length, 0)
+
+  const skip = logs.find((l) => l.event === 'l1-skip')
+  assert.ok(skip)
+  assert.equal(skip.detail.reason, 'semantic-off', '开关关闭要与「冷」「没有相关页」区分开')
+  assert.equal(skip.detail.semanticTried, false)
+})
+
+test('L1 可观测：语义已热但库里没有相关页 → l1-skip(no-hits)', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  // 人为把该库的语义运行时置为「已热」：假 store 上任何检索都会抛错，searchWarm 会吞掉并返回空。
+  // 这条用例的价值是把「已热但没料」与「没热」分开——前者是库的问题，后者是触发链的问题。
+  const { semanticRuntimeFor, disposeSemanticRuntimes } = await import('./lib/semantic-hits.js')
+  const root = resolvePath(store.wikiRoot)
+  await semanticRuntimeFor(root, async () => ({ store: { close() {} } }))
+  t.after(() => disposeSemanticRuntimes())
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log,
+  })
+
+  const { agent, injected } = fakeAgent([userEvent(1, '帮我把这张图片的尺寸改成 800x600')])
+  await preStep(host, agent)
+  assert.equal(injected.length, 0, '库里没有相关页就必须静默')
+
+  const skip = logs.find((l) => l.event === 'l1-skip')
+  assert.ok(skip, '已热但没料也要留痕')
+  assert.equal(skip.detail.reason, 'no-hits', '已热且无相关页 = no-hits，不得与冷语义混淆')
+  assert.equal(skip.detail.warm, true)
+})
+
+// --- 对抗评审（2026-10-24）抓出的三个真问题：lexical 恒为 0、warm 冒充可用、l1-status 位置 ---
+
+test('L1 可观测：只差一个词被门槛挡掉 → nearMiss 必须现形（283d4b68 的形状）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  // 页面只与任务共享「加载」一个词 → 命中 1 词被 MIN_TERMS=2 挡掉。
+  // 这正是 283d4b68 的现场；没有 nearMiss 时它与「完全不相关任务」的日志完全同形。
+  store.writePage({
+    id: 'tasks-json-atomic', title: '任务原子写入与加载白名单', category: 'concepts',
+    tags: ['tasks'], source: 's', confidence: 'extracted', created: NOW, updated: NOW,
+    body: '加载端白名单会静默丢弃无标题任务。',
+  })
+  const { warmSemanticRuntime } = await import('./lib/semantic-hits.js')
+  assert.equal(warmSemanticRuntime(resolvePath(store.wikiRoot)), null, '用例前提：语义运行时未热')
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log,
+  })
+
+  const { agent, injected } = fakeAgent([userEvent(1, 'knj-scheduler 里面能正常加载skill吗')])
+  await preStep(host, agent)
+  assert.equal(injected.length, 0, '门槛以下不得注入（宁可不说是第一原则，不变）')
+
+  const skip = logs.find((l) => l.event === 'l1-skip')
+  assert.ok(skip)
+  assert.equal(skip.detail.reason, 'cold-semantic')
+  assert.ok(skip.detail.nearMiss, '差一个词被挡掉的现场必须能看出 nearMiss，否则无法诊断本次事故')
+  assert.equal(skip.detail.nearMiss.id, 'tasks-json-atomic', '要指出是哪一页差一点')
+  assert.equal(skip.detail.nearMiss.terms, 1, 'nearMiss.terms = 该页命中词数（1 < MIN_TERMS=2）')
+})
+
+test('L1 可观测：语义运行时存在但后端不可用 → warm=false（不得冒充 no-hits）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  // 运行时对象存在，但没有 store（模型缺失 / 库加载失败）——semanticRawHits 的真实判据是 warm?.store
+  const { semanticRuntimeFor, disposeSemanticRuntimes } = await import('./lib/semantic-hits.js')
+  await semanticRuntimeFor(resolvePath(store.wikiRoot), async () => ({ store: null, loadError: 'model-missing' }))
+  t.after(() => disposeSemanticRuntimes())
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log,
+  })
+
+  const { agent } = fakeAgent([userEvent(1, '帮我把这张图片的尺寸改成 800x600')])
+  await preStep(host, agent)
+
+  const skip = logs.find((l) => l.event === 'l1-skip')
+  assert.ok(skip)
+  assert.equal(skip.detail.warm, false, 'warm 必须表示「可检索」而不是「运行时对象存在」')
+  assert.equal(skip.detail.hot, true, 'hot 表示运行时对象已存在（区分「冷」与「坏了」）')
+  assert.equal(skip.detail.reason, 'cold-semantic', '不可用时不得报成 no-hits（库里有没有料是另一回事）')
+})
+
+test('L1 可观测：no-store 必须记录是哪个工作区（否则无法定位）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, { createNotice: async (text, summary) => notice(text, summary), log })
+  const { agent } = fakeAgent([userEvent(1, 'dsh-scheduler 的 cron 时区问题')], { cwd: dir })
+  await preStep(host, agent)
+
+  const skip = logs.find((l) => l.event === 'l1-skip')
+  assert.ok(skip)
+  assert.equal(skip.detail.reason, 'no-store')
+  assert.equal(skip.detail.cwd, dir, 'no-store 必须带会话 cwd：否则「哪个工作区没库」无从查起')
+})
+
+test('L1 可观测：日志只带诊断字段，绝不带任务原文/页面内容', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, { createNotice: async (text, summary) => notice(text, summary), log })
+
+  const task = '帮我把这张图片的尺寸改成 800x600'
+  const { agent } = fakeAgent([userEvent(1, task)])
+  await preStep(host, agent)
+
+  const skip = logs.find((l) => l.event === 'l1-skip')
+  assert.ok(skip)
+  // 键集合固定：新增字段必须显式进入这份清单，防止将来把原文/页面内容随手塞进日志
+  assert.deepEqual(Object.keys(skip.detail).sort(), ['hot', 'lexical', 'reason', 'semanticTried', 'taskSeq', 'warm'])
+  assert.equal(JSON.stringify(skip.detail).includes('图片'), false, '日志不得包含任务原文')
+})
+
+test('L1 可观测：l1-status 必须带 subagent 档位（与 enabled 一起构成对照基线）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, { createNotice: async (text, summary) => notice(text, summary), log })
+
+  const status = logs.find((l) => l.event === 'l1-status')
+  assert.ok(status)
+  assert.deepEqual(Object.keys(status.detail).sort(), ['enabled', 'registered', 'subagent'])
+  assert.equal(status.detail.subagent, true, '默认子代理也触发，必须能从日志读出来')
+})
+
+test('L1 可观测：日志函数抛错不得打断 pre-step（触发层是增益，不是依赖）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  seed(store)
+
+  const host = fakeHost()
+  const events = []
+  installTrigger(host, { currentReadonly: () => store }, {
+    createNotice: async (text, summary) => notice(text, summary),
+    log: (event) => { events.push(event); if (event === 'l1-skip') throw new Error('log 写失败') },
+  })
+  const { agent } = fakeAgent([userEvent(1, '帮我把这张图片的尺寸改成 800x600')])
+  const decision = await preStep(host, agent)
+  assert.deepEqual(decision, { kind: 'ok' }, '日志抛错必须被既有 try/catch 吞掉，pre-step 原样返回')
+  assert.ok(events.includes('l1-skip'), '抛错发生在 l1-skip 自身')
+})
+
 test('接线：provider 不可用 / 注入点抛错都不得打断主流程', async () => {
   const host = fakeHost()
   installTrigger(
@@ -670,7 +955,7 @@ test('L0 接线：agent/created 注入库身份（0.2 真实事件）；legacy s
   assert.equal(first.injected.length, 1, '有页面的库应在会话开始告知身份')
   assert.match(first.injected[0].text, /知识库/)
   assert.match(first.injected[0].text, /2 页/, '身份块要给出页数（让模型知道库里有货）')
-  assert.equal(first.injected[0].summary, VAULT_IDENTITY_SUMMARY)
+  assert.match(first.injected[0].summary, /^知识库身份：/, '摘要以去重前缀开头，且能自证库名与页数（见下一例）')
 
   // resume：日志里已有身份块 → 不重复注入
   const resumed = fakeAgent([injectedNoticeEvent(1, VAULT_IDENTITY_SUMMARY)], { cwd: ws.dir })
@@ -683,6 +968,33 @@ test('L0 接线：agent/created 注入库身份（0.2 真实事件）；legacy s
   const blank = fakeAgent([])
   hostEmpty.handlers.get('agent/created')({ agent: blank.agent })
   assert.equal(blank.injected.length, 0, '空库不注入身份（不制造「有货」的错觉）')
+})
+
+test('L0 摘要：折叠行摘要自证库名与页数，且新格式仍按前缀去重', async (t) => {
+  const ws = makeWorkspace(t, 'identity-summary')
+  seed(ws.store) // 2 页
+  const provider = { currentReadonly: () => undefined, readonlyVaultForRoot: (root) => ws.manager.readonlyVaultForRoot(root) }
+  const host = fakeHost()
+  installTrigger(host, provider, { createNotice: async (text, summary) => notice(text, summary) })
+  const created = host.handlers.get('agent/created')
+
+  const first = fakeAgent([], { cwd: ws.dir })
+  await created({ agent: first.agent })
+  assert.equal(first.injected.length, 1)
+
+  // 为什么（2026-10-24 用户实测）：DSH 0.2 的聊天界面把 form:'notice' 渲染成**默认折叠**的一行
+  // （ContextInjectionRow），折叠时只显示 summary。摘要若只有「知识库身份」，界面上就看不到库在哪，
+  // 用户会以为身份块被删了——摘要必须自己带上「哪个库、有几页」。
+  const summary = first.injected[0].summary
+  assert.match(summary, /^知识库身份：/, '摘要必须以去重前缀开头')
+  assert.match(summary, /（2 页）/, '摘要要自证页数')
+  assert.match(summary, /identity-summary/, '摘要要自证库名（折叠行不展开也能看到）')
+  assert.ok(summary.length <= 80, '折叠行是单行省略号显示，摘要必须保持简短')
+
+  // 摘要形态变了，跨重启去重也必须跟着改成前缀判：否则每次恢复会话都会再灌一遍
+  const resumedNew = fakeAgent([injectedNoticeEvent(1, '知识库身份：别的库（7 页）')], { cwd: ws.dir })
+  await created({ agent: resumedNew.agent })
+  assert.equal(resumedNew.injected.length, 0, '含库名页数的新摘要形态同样按前缀去重')
 })
 
 test('resolveSessionVault：cwd 在子目录时向上认到工作区根（库在工作区根，cwd 是子目录）', (t) => {

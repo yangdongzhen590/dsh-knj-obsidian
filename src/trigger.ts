@@ -19,7 +19,7 @@
 import { join, resolve } from 'node:path'
 import type { VaultStore } from './vault-store.ts'
 import type { WikiCategory, WikiPage } from './types.ts'
-import { semanticRawHits, toCandidateHints } from './semantic-hits.ts'
+import { semanticRawHits, semanticFallbackEnabled, toCandidateHints, warmSemanticRuntime } from './semantic-hits.ts'
 
 export interface TriggerCandidate {
   id: string
@@ -125,35 +125,51 @@ const GENERIC_TERM_DISCOUNT = 0.3
  */
 const HEADING_ONLY_DISCOUNT = 0.6
 
-/** 词表命中：命中项 + 权重降序的理由词（命中不足时返回 null）。 */
+/**
+ * 词表命中的**原始**结果：命中项、加权分、命中个数。
+ *
+ * 这里刻意**不做**门槛判断：门槛（MIN_TERMS / MIN_SCORE）是「说不说」的判据，
+ * 而 nearMiss 需要知道「差在哪」。把门槛挪到调用处，诊断信息才不会被门槛顺手丢掉。
+ */
 function lexicalHitsOf(
   taskText: string,
   entry: { terms: string[]; headingOnly: Set<string> },
   weightOfTerm: (term: string) => number,
-): { hits: string[]; score: number } | null {
+): { hits: string[]; score: number; count: number } {
   const matched = entry.terms.filter((t) => taskText.includes(t))
   const score = matched.reduce((sum, t) => sum + weightOfTerm(t), 0)
-  // 精度门槛：至少要命中 2 个词，且加权分不低——单个词就说话是假阳性的主要来源
-  if (matched.length < MIN_TERMS || score < MIN_SCORE) return null
   const hits = [...matched]
     .sort((a, b) => weightOfTerm(b) - weightOfTerm(a) || (a < b ? -1 : 1))
     .slice(0, MAX_HITS_SHOWN)
-  return { hits, score }
+  return { hits, score, count: matched.length }
+}
+
+/** 词面排序结果：通过门槛的候选 + 门槛以下最强的一页（只给诊断用）。 */
+export interface TaskPageRanking {
+  hits: TriggerCandidate[]
+  /**
+   * 被 MIN_TERMS / MIN_SCORE 挡掉的最强一页：**只用于日志**，绝不参与注入决策。
+   *
+   * 为什么需要它（2026-10-24）：session-283d4b68 的真实现场是「页面命中 1 个词、被 MIN_TERMS=2
+   * 挡掉」，而只记候选页数时，它与「任务跟库毫无关系」的日志完全同形——事故的诊断线索
+   * 恰恰在门槛处被丢掉了。这个字段把「差一个词」与「完全不相关」分开。
+   */
+  nearMiss?: TriggerCandidate
 }
 
 /**
- * 用页面侧词表扫任务原文，返回相关页（按分降序、同分按 id 升序，保证可复现）。
+ * 用页面侧词表扫任务原文，返回「通过门槛的候选 + nearMiss」。
  *
  * 打分 = Σ 命中词权重（按文档频率衰减）。命中不足 / 文本为空 / 空库 → 空数组：
  * 静默是默认行为，不是异常。
  */
-export function matchTaskPages(
+export function matchTaskPagesDetailed(
   store: VaultStore,
   taskText: string,
   opts: MatchOptions = {},
-): TriggerCandidate[] {
+): TaskPageRanking {
   const text = (taskText ?? '').toLowerCase()
-  if (text.trim().length === 0) return []
+  if (text.trim().length === 0) return { hits: [] }
   const max = opts.max ?? DEFAULT_MAX
 
   // 第一遍：装载页面并统计词频（决定每个词的区分度）
@@ -176,15 +192,16 @@ export function matchTaskPages(
   }
 
   // 第二遍：按权重累加命中（小节标题词打六折）
-  const out: TriggerCandidate[] = []
+  const accepted: TriggerCandidate[] = []
+  let bestRejected: { candidate: TriggerCandidate; score: number } | undefined
   for (const entry of pages) {
     const weightOfTerm = (t: string): number => {
       const base = weightOf(docFreq.get(t) ?? 1) * (GENERIC_TERMS.has(t) ? GENERIC_TERM_DISCOUNT : 1)
       return entry.headingOnly.has(t) ? base * HEADING_ONLY_DISCOUNT : base
     }
     const lex = lexicalHitsOf(text, entry, weightOfTerm)
-    if (!lex) continue
-    out.push({
+    if (lex.count === 0) continue
+    const candidate: TriggerCandidate = {
       id: entry.ref.id,
       category: entry.ref.category,
       title: entry.page.title,
@@ -193,11 +210,39 @@ export function matchTaskPages(
       score: lex.score,
       ...(entry.page.summary ? { summary: entry.page.summary } : {}),
       matchedBy: 'lexical',
-    })
+    }
+    // 精度门槛：至少要命中 2 个词，且加权分不低——单个词就说话是假阳性的主要来源
+    if (lex.count >= MIN_TERMS && lex.score >= MIN_SCORE) {
+      accepted.push(candidate)
+      continue
+    }
+    if (
+      !bestRejected
+      || lex.score > bestRejected.score
+      || (lex.score === bestRejected.score && candidate.id < bestRejected.candidate.id)
+    ) {
+      bestRejected = { candidate, score: lex.score }
+    }
   }
-  return out
+
+  const hits = accepted
     .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .slice(0, Math.max(0, max))
+  return bestRejected ? { hits, nearMiss: bestRejected.candidate } : { hits }
+}
+
+/**
+ * 用页面侧词表扫任务原文，返回相关页（按分降序、同分按 id 升序，保证可复现）。
+ *
+ * 打分 = Σ 命中词权重（按文档频率衰减）。命中不足 / 文本为空 / 空库 → 空数组：
+ * 静默是默认行为，不是异常。
+ */
+export function matchTaskPages(
+  store: VaultStore,
+  taskText: string,
+  opts: MatchOptions = {},
+): TriggerCandidate[] {
+  return matchTaskPagesDetailed(store, taskText, opts).hits
 }
 
 /** 语义兜底最多取几条（只取前两名：低于门槛的第三条只会稀释信噪比）。 */
@@ -1128,6 +1173,17 @@ export function latestNoticeByPrefix(
   return injectedNoticeRecords(events).find((n) => n.summary.startsWith(prefix))
 }
 
+/**
+ * 本会话日志里是否已有某个前缀的提醒。
+ *
+ * 为什么不能再用精确匹配（2026-10-24）：身份块的摘要现在带库名与页数
+ * （`知识库身份：<库名>（N 页）`），精确匹配会让「恢复同一会话」每次都命中失败、重复注入。
+ * 前缀匹配同时兼容旧日志里的纯「知识库身份」摘要。
+ */
+export function hasNoticeWithPrefix(events: readonly SessionEventLike[], prefix: string): boolean {
+  return injectedNoticeRecords(events).some((n) => n.summary.startsWith(prefix))
+}
+
 const PLUGIN_ID = 'dsh-knj-obsidian'
 /** L5 的摘要（去重键）。 */
 export const CAPTURE_SUMMARY = '沉淀提醒'
@@ -1203,6 +1259,17 @@ export function renderVaultIdentity(input: { name: string; root: string; pageCou
     `索引：${input.indexPath}`,
     '需要既有结论或踩过的坑时，可 wiki_query（词面）/ wiki_search_semantic（语义）/ wiki_read（读整页）检索。',
   ].join('\n')
+}
+
+/**
+ * L0 身份块的**摘要**：把库名与页数放进摘要本身。
+ *
+ * 为什么（2026-10-24 用户实测）：DSH 0.2 的聊天界面把 `form: 'notice'` 渲染成**默认折叠**的一行
+ * （`ContextInjectionRow`，折叠时只显示 summary）。摘要若只有「知识库身份」，界面上就看不到库在哪，
+ * 用户会以为身份块被删掉了。摘要自带「哪个库、有几页」后，不展开也能读到地址级信息。
+ */
+export function renderVaultIdentitySummary(identity: VaultIdentity): string {
+  return `${VAULT_IDENTITY_SUMMARY}：${identity.name}（${identity.pageCount} 页）`
 }
 
 /** 库身份解析结果（只读）。 */
@@ -1451,11 +1518,15 @@ export function installTrigger(
     if (!vaultIdentityEnabled()) return
     try {
       const events = sessionEventsOf(agent!.session)
-      // 跨重启去重：身份块也是一条落盘的 user/message（resume 时不重复注入）
-      if (injectedNotices(events).has(VAULT_IDENTITY_SUMMARY)) return
+      // 跨重启去重：身份块也是一条落盘的 user/message（resume 时不重复注入）。
+      // 摘要带库名+页数，所以按**前缀**判：换库、加页、以及旧日志里的纯「知识库身份」都不会重复注入。
+      if (hasNoticeWithPrefix(events, VAULT_IDENTITY_SUMMARY)) return
       const resolved = resolveSessionVault(provider, sessionCwdOf(agent!.session))
       if (!resolved || resolved.identity.pageCount === 0) return
-      agent!.inject?.(await createNotice(renderVaultIdentity(resolved.identity), VAULT_IDENTITY_SUMMARY))
+      agent!.inject?.(await createNotice(
+        renderVaultIdentity(resolved.identity),
+        renderVaultIdentitySummary(resolved.identity),
+      ))
     } catch {
       // L0 任何异常都不得影响主流程
     }
@@ -1469,7 +1540,13 @@ export function installTrigger(
   register('agent/session-start', injectVaultIdentity)
 
   // ---- L1 一档：新任务 → 命中或语义兜底 → 提示；二档：被忽略 → 追投正文（见 turn-stopping） ----
-  register('agent/pre-step', async ({ agent }: { agent?: AgentLike }, next: () => Promise<unknown>) => {
+  //
+  // L1 的可观测性（2026-10-24）：一档原先**一条日志都没有**，于是「钩子没挂上」与「判据没命中」
+  // 在日志上同形——这违反了本文件自己的原则（见 defaultTriggerLog 上方那段）。现场是
+  // session-283d4b68：任务「knj-scheduler 里面能正常加载skill吗」词面只命中 1 个词、语义运行时
+  // 未热（首问必然未热）→ 一档静默 → 二档连判定机会都没有，整条主动层 62 步没出过声。
+  // 现在每条「该说而没说」都留一条 l1-skip，reason 区分四种成因；判据与注入行为**零变化**。
+  const l1Registered = register('agent/pre-step', async ({ agent }: { agent?: AgentLike }, next: () => Promise<unknown>) => {
     const decision = await next()
     if (shutdownCheck(agent)) return decision
     try {
@@ -1486,11 +1563,51 @@ export function installTrigger(
       // 跨重启去重：提醒本身作为 user/message 落在会话日志里，摘要带任务 seq
       if (injectedNotices(events).has(taskSummaryOf(task.seq))) return decision
       const store = currentVault(agent!.session)
-      if (!store) return decision
-      let hits = matchTaskPages(store, task.text)
+      if (!store) {
+        // 给了 cwd 却解析不出库：按 L0 契约不回退全局库，这个「无库」结论必须留痕，
+        // 否则它会被误读成「这个库没用」（正是 283d4b68 的观感来源之一）。
+        // cwd 必须带上：否则「哪个工作区没库」无从查起。
+        log('l1-skip', {
+          taskSeq: task.seq,
+          reason: 'no-store',
+          lexical: 0,
+          warm: false,
+          hot: false,
+          semanticTried: false,
+          cwd: sessionCwdOf(agent!.session),
+        })
+        return decision
+      }
+      const ranking = matchTaskPagesDetailed(store, task.text)
+      let hits = ranking.hits
       // 字面 0 命中 → 语义兜底（只接受已热的运行时；未热/无模型/无索引一律静默）
-      if (hits.length === 0) hits = await semanticFallbackCandidates(store, task.text)
-      if (hits.length === 0) return decision
+      if (hits.length === 0) {
+        // 下面三项都是**只读**观测：warmSemanticRuntime 只查进程内缓存，绝不触发加载模型。
+        const root = vaultRootOfStore(store)
+        const semanticOn = semanticFallbackEnabled()
+        const runtime = root.length > 0 ? warmSemanticRuntime(root) : null
+        // hot = 运行时对象已存在；warm = 它**真的可检索**（有 store）。
+        // 混用两者会把「模型缺失 / 库加载失败」报成「已热但库里没料」——口径与 semanticRawHits 的
+        // `warm?.store` 判据冲突，是评审实测抓到的误标（2026-10-24）。
+        const hot = runtime != null
+        const warm = runtime?.store != null
+        hits = await semanticFallbackCandidates(store, task.text)
+        if (hits.length === 0) {
+          // nearMiss：被门槛挡掉的最强一页。283d4b68 的现场是「命中 1 词被 MIN_TERMS=2 挡掉」，
+          // 没有它，这次事故的日志与「任务跟库毫无关系」完全同形。
+          const near = ranking.nearMiss
+          log('l1-skip', {
+            taskSeq: task.seq,
+            reason: !semanticOn ? 'semantic-off' : !warm ? 'cold-semantic' : 'no-hits',
+            lexical: ranking.hits.length,
+            warm,
+            hot,
+            semanticTried: semanticOn,
+            ...(near ? { nearMiss: { id: near.id, terms: near.hits.length, score: near.score } } : {}),
+          })
+          return decision
+        }
+      }
       state.stageOne = { seq: task.seq, turn: currentTurnOf(events), top: { id: hits[0]!.id, category: hits[0]!.category } }
       agent!.inject?.(await createNotice(renderTaskReminder(hits), taskSummaryOf(task.seq)))
     } catch {
@@ -1608,7 +1725,12 @@ export function installTrigger(
       return decision
     }
   })
-  // 一次一行：把"钩子挂上了没有"与"当前档位"钉在日志里，作为「未触发」的可对照基线。
+  // 一次一行：把「钩子挂上了没有」与「当前档位」钉在日志里，作为「未触发」的可对照基线。
+  //
+  // ⚠️ 这两条**必须留在所有 register 之后**：log 也可能抛错（stdout EPIPE、未来注入的文件 log
+  // 写失败）。放在注册之间，一条日志失败就会静默吞掉后面几组接线（二档/L3、L2 门、写库闸），
+  // 并让 installTrigger 抛出去——那正是 register() 里 try/catch 要防的那类事故。
+  log('l1-status', { registered: l1Registered, enabled: triggerEnabled(), subagent: subagentTriggerEnabled() })
   log('l2-status', { registered: l2Registered, mode: gateModeOf() })
 
   /**
@@ -1667,5 +1789,5 @@ export function installTrigger(
   return () => {}
 }
 
-/** L0 身份块的摘要（去重键；每会话一次足以，重启后日志里已有就不再注入）。 */
+/** L0 身份块的摘要**前缀**（跨重启去重键；真实摘要 = `知识库身份：<库名>（N 页）`，见 renderVaultIdentitySummary）。 */
 export const VAULT_IDENTITY_SUMMARY = '知识库身份'
