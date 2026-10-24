@@ -94,6 +94,8 @@ export interface VaultProvider {
    * 回退正是「在 A 工作区问 A 的事、被 B 库答偏」的来源（实测见 .wiki/concepts/会话级知识库绑定）。
    */
   readonlyVaultForRoot?(root: string): { store: VaultStoreLike; name: string } | undefined
+  /** 注册表里按根查库（拿展示名与来源；零写盘）。会话级作用域下用于回填 current 信息。 */
+  recordForRoot?(root: string): VaultRecord | undefined
   /**
    * 为某个根确保库可写（wiki_init 专用）：注册（**不抢占全局当前库**）+ ensure 脚手架。
    * 与 attachRoot 的区别：attach 是用户显式动作、会把当前库切过去；本方法服务于

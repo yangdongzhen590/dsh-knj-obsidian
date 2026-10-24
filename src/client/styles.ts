@@ -72,6 +72,14 @@ export const WIKI_CSS = /* css */ `
 .knj-wiki .knj-scroll { overflow-y: auto; overflow-x: hidden; }
 /* 空态撑满滚动内容区，配合 knj-empty 的 flex 居中实现垂直居中（对齐工作台空态行为） */
 .knj-wiki .knj-scroll > .knj-empty { height: 100%; }
+/* v12 图谱视图宿主（2026-10-25）：不滚动、列向 flex，子节点吃满剩余高度。
+   背景：图谱画布此前是「测得高度减 86 再写回自身」的反馈环 + 自动高度，侧栏再高画布也只有 320px，
+   下方一大片空白。现在画布高度完全由 flex 链决定（见 GraphView 嵌入态注释）。 */
+.knj-wiki .knj-graph-host { display: flex; flex-direction: column; overflow: hidden; }
+.knj-wiki .knj-graph-host > * { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+/* 兜底：svg 改成 height:100% 后，画布高度完全由父链决定；若宿主 pane body 没有确定高度，
+   百分比高度退化为 auto → 画布可能塌成 0。给嵌入态画布留 200px 最小高度（超短面板由宿主裁剪）。 */
+.knj-wiki .knj-graph-embed .knj-fscanvas { min-height: 200px; }
 .knj-wiki .knj-pad { padding: 12px; }
 .knj-wiki .knj-hrow { display: flex; align-items: center; gap: 8px; }
 .knj-wiki .knj-hairline { border-top: 1px solid var(--knj-border-soft); }
@@ -261,7 +269,7 @@ export const WIKI_CSS = /* css */ `
 .knj-wiki .knj-graph-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px 0; }
 .knj-wiki .knj-graph-stats { font-size: 12px; color: var(--knj-text-3); }
 .knj-wiki .knj-graph-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 12px 4px; }
-.knj-wiki .knj-graph-svg { display: block; width: 100%; height: auto; border-radius: var(--knj-radius-m); background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); }
+.knj-wiki .knj-graph-svg { display: block; width: 100%; height: 100%; border-radius: var(--knj-radius-m); background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); }
 .knj-wiki .knj-graph-label { fill: var(--knj-text-2); font-size: 11px; pointer-events: none; }
 
 /* ============ 图谱全屏（v10） ============ */

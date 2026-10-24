@@ -1,6 +1,6 @@
 // src/routes.ts
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { VaultStore } from './vault-store.ts'
 import { SaveError } from './vault-store.ts'
 import { retrieve } from './retriever.ts'
@@ -11,7 +11,7 @@ import { importPath } from './importer.ts'
 import { createCheckpoint, listCheckpoints, restoreCheckpoint } from './checkpoint.ts'
 import { refresherFor, vaultRootOf, type Refresher } from './semantic-refresh.ts'
 import type { VaultProvider } from './types.ts'
-import type { WikiCategory } from './types.ts'
+import type { VaultRecord, VaultStoreLike, WikiCategory } from './types.ts'
 
 export interface WebServerService {
   register(route: {
@@ -91,6 +91,40 @@ async function guardWrite(request: IncomingMessage): Promise<Record<string, unkn
   return readJsonBody(request)
 }
 
+/**
+ * 按请求方工作区根**只读**解析库（零写盘：不 ensure、不建目录、不写注册表）。
+ *
+ * 为什么需要它：面板是按会话渲染的，多个会话可能同时挂在不同工作区；provider 的
+ * 「当前库」是宿主进程里的单值，会被最后一个 activate 的面板劫持 —— 这正是
+ * 「切换工作区后边栏仍是旧库」的成因（见 .wiki/concepts/会话级知识库绑定）。
+ * 解析不出库时由调用方明确报 `vault-not-initialized`，**绝不回退全局库**。
+ */
+function resolveFollowedVault(
+  provider: VaultProvider,
+  root: string,
+): { store: VaultStoreLike; info: VaultRecord & { pageCount: number } } | undefined {
+  const hit = typeof provider.readonlyVaultForRoot === 'function' ? provider.readonlyVaultForRoot(root) : undefined
+  if (!hit) return undefined
+  // ⚠️ VaultStore.wikiRoot 是 `<项目>/.wiki`，而注册表里的库根是**项目目录**。
+  // 拿 wikiRoot 去 recordForRoot 会查不到 → id 为空 → 面板下拉的 value 匹配不到任何
+  // option，浏览器回落到第一个注册库（实测显示成 iobs_pro）。必须先还原项目目录。
+  const wikiRoot = resolve(hit.store.wikiRoot)
+  const projectRoot = basename(wikiRoot) === '.wiki' ? dirname(wikiRoot) : wikiRoot
+  const record = provider.recordForRoot?.(projectRoot) ?? provider.recordForRoot?.(wikiRoot)
+  let pageCount = 0
+  try { pageCount = hit.store.listPagesReadonly().length } catch { pageCount = 0 }
+  return {
+    store: hit.store,
+    info: {
+      id: record?.id ?? '',
+      name: record?.name ?? hit.name,
+      root: record?.root ?? projectRoot,
+      source: record?.source ?? 'workspace',
+      pageCount,
+    },
+  }
+}
+
 export interface WikiRoutesDeps {
   /** 测试注入点：替换语义刷新器（默认真实实现，会读写 ~/.dsh/qmd）。 */
   refresherFor?: (vaultRoot: string) => Pick<Refresher, 'status' | 'refreshNow'>
@@ -109,13 +143,40 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: W
     try {
       // 只有真正写页面的端点才走 current()（首次会 ensure 脚手架）；其余（GET、vault 管理、
       // 校验类 POST）一律只读视图，避免“切库/查询即建库”把未初始化库标记成已初始化。
+      //
+      // 2026-10-24 会话级作用域：请求带 `?root=<工作区根>` 时按该根解析库（见
+      // resolveFollowedVault）。解析不出库 → 409，绝不回退全局当前库。
       const WRITE_PATHS = new Set([`${BASE}/page`, `${BASE}/rebuild-index`, `${BASE}/import`, `${BASE}/checkpoint/restore`])
-      const store = (method === 'POST' && WRITE_PATHS.has(path) ? provider.current() : provider.currentReadonly()) as VaultStore
+      const rootParam = (url.searchParams.get('root') ?? '').trim()
+      const followed = rootParam ? resolveFollowedVault(provider, rootParam) : undefined
       // ---- v7 vault 管理端点 ----
       if (path === `${BASE}/vaults` && method === 'GET') {
-        sendJson(response, 200, { current: provider.currentRecord(), vaults: provider.listVaults() })
+        if (rootParam && !followed) {
+          // 未初始化工作区：current=null + uninitialized，面板据此显示「本工作区没有知识库」
+          sendJson(response, 200, {
+            current: null,
+            vaults: provider.listVaults(),
+            followedRoot: rootParam,
+            uninitialized: true,
+          })
+          return
+        }
+        sendJson(response, 200, followed
+          ? { current: followed.info, vaults: provider.listVaults(), followedRoot: rootParam }
+          : { current: provider.currentRecord(), vaults: provider.listVaults() })
         return
       }
+      if (rootParam && !followed) {
+        sendJson(response, 409, {
+          error: `本工作区还没有知识库：${rootParam}；先 wiki_init，或在边栏把该目录挂接/初始化`,
+          code: 'vault-not-initialized',
+          root: rootParam,
+        })
+        return
+      }
+      const store = (followed
+        ? followed.store
+        : (method === 'POST' && WRITE_PATHS.has(path) ? provider.current() : provider.currentReadonly())) as VaultStore
       if (path.startsWith(`${BASE}/vault/`)) {
         // 单库模式（裸 VaultStore）没有 vault 写能力
         if (!provider.switchVault) { sendJson(response, 404, { error: 'not found' }); return }

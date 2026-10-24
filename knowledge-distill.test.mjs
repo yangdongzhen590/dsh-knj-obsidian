@@ -123,13 +123,42 @@ test('启动器如实披露代码侧支持范围并保留新建会话/复制双�
   assert.doesNotMatch(launcher, /已调用\s*AI|自动\s*写入/)
 })
 
-test('桥接：新建会话契约（create → open → scope → setDraft）', () => {
+test('桥接：0.2 宿主没有 sessions.open —— 必须走 uiWorkspace 建会话并切过去', () => {
   const index = readFileSync(join(CLIENT, 'index.ts'), 'utf8')
-  assert.match(index, /sessions\.create/, '应调用会话 create')
-  assert.match(index, /sessions\.open/, '应切到新会话')
-  assert.match(index, /scope/, '应等待新会话作用域可用')
-  assert.match(index, /setDraft/, '应预填新会话输入框')
+  // 2026-10-24 实测：ISessions（@deepseek-ai/dsh-api-session-controller/client）
+  // 只有 create/fork/scope/retain…，**没有 open**。旧写法 `sessions.open?.(newId)`
+  // 是可选链静默 no-op：会话建出来了但界面不切、scope 不保留、预填必然失败，
+  // 用户看到的就是「点了没反应」。0.2 的切换/新建+预填归 ui-workspace 的
+  // UiWorkspace.openSession / startSession（startSession 内部 = 新建→切会话→初始化草稿）。
+  assert.match(index, /uiWorkspace/, '应取宿主 uiWorkspace 服务')
+  assert.match(index, /startSession/, '新建会话+预填应走宿主 startSession（不再自己拼 open）')
+  assert.match(index, /openSession/, '旧宿主回退路径也应能切会话（openSession）')
+  assert.match(index, /prompt/, '预填内容以 prompt 交给宿主草稿初始化')
+  // 回退路径保留：宿主没有 uiWorkspace 时才用 create/scope/setDraft
+  assert.match(index, /sessions\.create/, '旧宿主回退路径仍保留 create')
+  assert.match(index, /setDraft/, '旧宿主回退路径仍保留 setDraft')
   assert.match(index, /cwd/, '新会话应归属当前库/工作区')
+  // 宿主 startSession 会**复用**同 cwd 的空白会话（createInWorkspace 的 blank 分支）：
+  // 只按「出现新 id」判定成功会假阴性（复用旧 blank 时永远等不到新 id）。
+  assert.match(index, /blank/, '应兼容宿主复用空白会话，而不是只认新 id')
+  // uiWorkspace 是后加载的插件服务：在 apply 时捕获会拿到 undefined 并永久保留
+  // （2026-10-24 实测：面板仍报旧的 prefill not verified，说明走了回退路径）。
+  // 必须调用时再取（uiWorkspaceFace()），并把解析结果写进 console 便于现场取证。
+  assert.match(index, /uiWorkspaceFace/, '应在调用时解析 uiWorkspace，而不是 apply 时捕获')
+  assert.match(index, /CLIENT_BUILD/, '应带客户端构建标记（人眼确认浏览器加载了哪次构建）')
+})
+
+test('初始化按钮必须真能跑（不得被「未初始化」守卫拦住）', () => {
+  const src = readFileSync(join(CLIENT, 'KnowledgeDistillLauncher.tsx'), 'utf8')
+  // 2026-10-24 实测：未初始化工作区里点「初始化知识库」什么都没发生——
+  // initVault → send() 的两道守卫先 return：/vaults 的 current 为 null（vaultRoot=null），
+  // 且 initialized !== true 时提示“请先点上面的初始化知识库”= 死循环。
+  assert.match(src, /startInstruction/, '应有不带初始态守卫的启动函数')
+  const at = src.indexOf('const initVault')
+  assert.ok(at >= 0, '应有 initVault')
+  const block = src.slice(at, at + 500)
+  assert.doesNotMatch(block, /await send\(/, 'initVault 不得调用带 initialized/vaultRoot 守卫的 send')
+  assert.match(src, /vaultRoot \?\? root/, '未初始化时 /vaults 无 current，库根应回退到会话工作区 root')
 })
 
 test('新建会话必须落到当前库所属工作区（workspaceId + cwd 读回校验）', () => {
@@ -144,7 +173,9 @@ test('新建会话必须落到当前库所属工作区（workspaceId + cwd 读�
   // 宿主 WorkspaceView 的 id 字段名是 workspaceId（读 id 会拿到 undefined）
   assert.match(index, /hit\.workspaceId|workspaceId \?\?/, '应读 workspaceId 字段（兼容旧 id）')
   const header = readFileSync(join(CLIENT, 'VaultHeader.tsx'), 'utf8')
-  assert.match(header, /workspaceIdOf|workspaceId \?\?/, '跟随工作区逻辑同样要用 workspaceId')
+  // 2026-10-24：面板不再按 workspaceId 猜「当前工作区」，改为直接接收会话工作区根 root
+  assert.match(header, /root\?: string/, 'VaultHeader 应按会话工作区根（root）取库')
+  assert.doesNotMatch(header.replace(/\/\*[\s\S]*?\*\//g, ''), /recentWorkspaceId/, '不得再依赖 0.2 不存在的最近工作区字段')
 })
 
 test('边栏分段更名为「知识蒸馏」且不再保留两个旧分段', () => {

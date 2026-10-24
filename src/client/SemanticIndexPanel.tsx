@@ -21,7 +21,7 @@ function formatSeconds(ms?: number): string {
  * 为什么必须是一个显式按钮：真实库首次重建包含模型加载（本机实测冷启动约 1.5 分钟，之后约 40ms/篇），
  * 不能让它变成界面上一次没有解释的卡顿；进度靠轮询 status（待嵌入数在下降）。
  */
-export function SemanticIndexPanel() {
+export function SemanticIndexPanel({ root }: { root?: string } = {}) {
   const [status, setStatus] = useState<SemanticStatus | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -31,7 +31,7 @@ export function SemanticIndexPanel() {
   useEffect(() => {
     aliveRef.current = true
     const load = () => {
-      fetchSemanticStatus()
+      fetchSemanticStatus(root)
         .then((s) => { if (aliveRef.current) setStatus(s) })
         .catch(() => { if (aliveRef.current) setStatus(null) })
     }
@@ -46,14 +46,14 @@ export function SemanticIndexPanel() {
       window.removeEventListener('wiki:pages-changed', load)
       window.removeEventListener('wiki:vault-changed', load)
     }
-  }, [])
+  }, [root])
 
   // 重建进行中：每 2 秒轮询一次状态（也用于刷新「已用时间」），结束后再取一次终态
   useEffect(() => {
     if (!status?.refreshing) return
     const timer = setInterval(() => {
       setTick((v) => v + 1)
-      fetchSemanticStatus()
+      fetchSemanticStatus(root)
         .then((s) => {
           if (!aliveRef.current) return
           setStatus(s)
@@ -66,13 +66,13 @@ export function SemanticIndexPanel() {
         .catch(() => { /* 轮询失败保留上一次状态 */ })
     }, 2000)
     return () => clearInterval(timer)
-  }, [status?.refreshing])
+  }, [status?.refreshing, root])
 
   const update = async () => {
     setBusy(true)
     setMessage('')
     try {
-      const result = await triggerSemanticUpdate()
+      const result = await triggerSemanticUpdate(root)
       setStatus(result.status)
       setMessage(result.running ? '正在重建索引（首次包含模型加载，通常 1–2 分钟）…' : (result.status.note ?? '已提交，但未开始'))
     } catch (error) {

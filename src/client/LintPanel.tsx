@@ -4,6 +4,9 @@
  * - 「问题」展开：断链 / 孤儿页 / 缺 frontmatter 逐条可点跳转
  * - 「工具」展开：重建索引 / 导入 md（原顶部工具条移入，释放主视觉）
  *   v10 起：会话蒸馏入口移到边栏分段「会话蒸馏」（预填/复制启动器），此处不再重复
+ *
+ * root = 当前会话所属工作区根（2026-10-24 会话级作用域）：lint/页索引/重建/导入
+ * 都按它请求，不再读全局当前库。
  */
 import { useEffect, useState } from 'react'
 import { fetchLint, fetchPages, importMd, rebuildIndex, type LintReport } from './api.ts'
@@ -19,7 +22,7 @@ const CATEGORIES = [
   { value: 'tables', label: '数据结构' },
 ]
 
-export function LintPanel({ openNote }: { openNote: (id: string, category: string, title: string) => void }) {
+export function LintPanel({ openNote, root }: { openNote: (id: string, category: string, title: string) => void; root?: string }) {
   const [report, setReport] = useState<LintReport | null>(null)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [issuesOpen, setIssuesOpen] = useState(false)
@@ -36,10 +39,14 @@ export function LintPanel({ openNote }: { openNote: (id: string, category: strin
   }
 
   useEffect(() => {
+    let disposed = false
     const load = () => {
-      fetchLint().then(setReport).catch(() => {})
-      fetchPages()
+      fetchLint(root)
+        .then((r) => { if (!disposed) setReport(r) })
+        .catch(() => { if (!disposed) setReport(null) })
+      fetchPages(root)
         .then(({ pages }) => {
+          if (disposed) return
           const m = new Map<string, { category: string; title: string }>()
           for (const p of pages) m.set(p.id, { category: p.category, title: p.title })
           setCatById(m)
@@ -48,13 +55,13 @@ export function LintPanel({ openNote }: { openNote: (id: string, category: strin
     }
     load()
     window.addEventListener('wiki:pages-changed', load)
-    return () => window.removeEventListener('wiki:pages-changed', load)
-  }, [])
+    return () => { disposed = true; window.removeEventListener('wiki:pages-changed', load) }
+  }, [root])
 
   const doRebuild = async () => {
     setBusy('rebuild')
     try {
-      const r = await rebuildIndex()
+      const r = await rebuildIndex(root)
       flash(`索引已重建（${r.pageCount} 页）`)
       window.dispatchEvent(new CustomEvent('wiki:pages-changed'))
     } catch (e) {
@@ -67,7 +74,7 @@ export function LintPanel({ openNote }: { openNote: (id: string, category: strin
     if (!p) { flash('请先填写 md 文件或目录路径', 'err'); return }
     setBusy('import')
     try {
-      const r = await importMd(p, importCategory)
+      const r = await importMd(p, importCategory, root)
       const parts = [
         r.imported ? `暂存 ${r.imported}` : null,
         r.updated ? `更新 ${r.updated}` : null,

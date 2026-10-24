@@ -16,7 +16,9 @@ test('GraphView.tsx 存在且含力导向/图谱渲染逻辑', () => {
   const gv = join(ROOT, 'src/client/GraphView.tsx')
   assert.ok(existsSync(gv), 'src/client/GraphView.tsx 应存在')
   const text = readFileSync(gv, 'utf8')
-  assert.match(text, /api\/obsidian-wiki\/graph/)
+  // 2026-10-24：图谱取数改走 api.ts 的 fetchGraph(root)（会话级作用域），路径常量在 api.ts
+  assert.match(text, /fetchGraph/)
+  assert.match(readFileSync(join(ROOT, 'src/client/api.ts'), 'utf8'), /\$\{BASE\}\/graph/)
   assert.match(text, /svg|<svg/i)
 })
 
@@ -43,6 +45,35 @@ test('index.ts 把「知识库」+「笔记」都注册进 0.2 原生右侧栏',
   assert.match(text, /openNote/)
 })
 
+test('v12 嵌入态图谱吃满侧栏高度：不再自测高度减 86，svg 由 CSS 撑满', () => {
+  const gv = readFileSync(join(ROOT, 'src/client/GraphView.tsx'), 'utf8')
+  // 根因（2026-10-25 实测）：嵌入态把「自己测得的高度」再减 86 写回给自己 → 测量反馈环，
+  // 画布被钉在地板（~320/200px），侧栏再高也留一大片空白。
+  assert.doesNotMatch(gv, /-\s*86/, '嵌入态不得再把测得高度减 86（自测反馈环）')
+  assert.match(gv, /h: Math\.max\(200, el\.clientHeight/, '画布高度须直接取实测 clientHeight（200px 兜底）')
+  assert.match(gv, /flex: '1 1 auto'/, '嵌入态根节点须在 flex 链里长高')
+  assert.doesNotMatch(gv, /height: size\.h/, 'svg 不得再用 state 高度（等价于画布高，反馈环复现）')
+  // 数据到达前 wrapRef 为 null：测量 effect 必须随 graph 重跑，否则永远量不到画布。
+  assert.match(gv, /\}, \[graph, fullscreen, active, seq\]\)/, '测量 effect 须依赖 graph')
+})
+
+test('v12 侧栏图谱视图不滚动、内容区占满（knj-graph-host）', () => {
+  const ws = readFileSync(join(ROOT, 'src/client/WikiSidebar.tsx'), 'utf8')
+  assert.match(ws, /view === 'graph' \? 'knj-grow knj-graph-host'/, '图谱视图须用不滚动宿主')
+  const css = readFileSync(join(ROOT, 'src/client/styles.ts'), 'utf8')
+  assert.match(css, /\.knj-graph-host\s*\{[^}]*flex-direction: column/, '宿主须列向 flex')
+  assert.match(css, /\.knj-graph-host\s*\{[^}]*overflow: hidden/, '宿主不得滚动')
+  assert.match(css, /\.knj-graph-host > \*[^{]*\{[^}]*flex: 1 1 auto/, '宿主子节点须吃满剩余高度')
+  assert.match(css, /\.knj-graph-svg\s*\{[^}]*height: 100%/, 'svg 高度交给 CSS（100%）')
+})
+
+test('v12 嵌入态画布保留 200px 兜底高度（宿主不给确定高度时不许塌成 0）', () => {
+  // svg 改成 height:100% 后，画布高度完全由父链决定：若宿主 pane body 没有确定高度，
+  // 百分比高度退化成 auto → 画布可能塌成 0。给嵌入态画布一个最小高度兜底。
+  const css = readFileSync(join(ROOT, 'src/client/styles.ts'), 'utf8')
+  assert.match(css, /\.knj-graph-embed \.knj-fscanvas\s*\{[^}]*min-height: 200px/, '嵌入态画布须有 200px 兜底')
+})
+
 test('GraphView 用户内容一律经 esc() 转义——含 <script> 的标题不会裸拼进 innerHTML', () => {
   const gv = join(ROOT, 'src/client/GraphView.tsx')
   const text = readFileSync(gv, 'utf8')
@@ -60,20 +91,35 @@ test('GraphView 用户内容一律经 esc() 转义——含 <script> 的标题�
   assert.doesNotMatch(text, /\$\{n\.(id|title|category)\?/, '同上（含可选链形态）')
 })
 
-test('GraphView 布局收敛后铺开并选边标签（面板空间利用三步中的 ①②）', () => {
+test('GraphView 终态几何不变：同步收敛后铺开并选边标签（不再逐帧力场重绘）', () => {
   const gv = join(ROOT, 'src/client/GraphView.tsx')
   const text = readFileSync(gv, 'utf8')
-  assert.match(text, /spreadToFill\(nodes, W, H\)/, '布局结束后应调用 spreadToFill 铺满面板')
+  // 力场参数与终态处理顺序必须与改前一致——v13 只改动效呈现，不改终态几何。
+  assert.match(text, /const DEG = 0\.85, REP = 1200, TARGET = 120/, '力场参数不得改（终态几何不变）')
+  assert.match(text, /for \(let frame = 0; frame < frameLimit; frame \+= 1\) integrate\(\)/, '应收敛：一次性同步跑完力场迭代')
+  assert.match(text, /spreadToFill\(nodes, W, H\)/, '收敛结束后应调用 spreadToFill 铺满面板')
   assert.match(text, /placeLabels\(nodes, W, H, measureLabel\)/, '铺开后应选边/截断标签')
-  // 两步必须在「最后一帧」执行（写在 raf 续帧那行之后，即 else 收敛分支里），
-  // 否则力场会把铺开的结果又拉回去；铺开+选边之后必须重绘一次。
-  const firstRaf = text.indexOf('raf = requestAnimationFrame(tick)')
   const settle = text.indexOf('spreadToFill(nodes, W, H)')
   const labels = text.indexOf('placeLabels(nodes, W, H, measureLabel)')
   const repaint = text.indexOf('paint()', labels)
-  assert.ok(firstRaf > 0 && settle > firstRaf, '铺开须写在收敛分支（raf 续帧那行之后）')
-  assert.ok(labels > settle, '先铺开坐标、再定标签侧别')
-  assert.ok(repaint > labels, '选边/截断后须重绘以生效')
+  assert.ok(settle > 0 && labels > settle, '先铺开坐标、再定标签侧别')
+  assert.ok(repaint > labels, '终态定稿后须重绘一次')
+  // 旧实现 raf(tick) 每帧跑力场并 innerHTML 重绘：开场前几帧位移巨大（“飞”），
+  // 收敛最后一帧再把铺开结果瞬跳上去。该结构必须消失。
+  assert.doesNotMatch(text, /requestAnimationFrame\(tick\)/, '不得再逐帧跑力场并重绘')
   // 侧别决定 text-anchor：左侧标签向右对齐，右侧标签向左对齐（否则文字会压回圆上）
   assert.match(text, /text-anchor="\$\{side === 'left' \? 'end' : 'start'\}"/, 'text-anchor 须按标签侧别选择')
+})
+
+test('GraphView 入场动效：固定时长缓动 + 大库/减少动效静态 + resize 不重播', () => {
+  const text = readFileSync(join(ROOT, 'src/client/GraphView.tsx'), 'utf8')
+  assert.match(text, /from '\.\.\/graph-motion\.ts'/, '动效参数/缓动须来自 graph-motion 纯模块')
+  assert.match(text, /easeInOutSmoothstep\(/, '入场须用缓动函数（不许线性/瞬移）')
+  assert.match(text, /ANIMATE_DURATION_MS/, '时长须用固定常量（与节点数无关）')
+  assert.match(text, /shouldAnimate\(nodes\.length/, '节点数阈值 + 减少动效须走 shouldAnimate')
+  assert.match(text, /prefers-reduced-motion/, '须识别 prefers-reduced-motion')
+  assert.match(text, /lastAnimatedRef/, '尺寸变化不得重播动画（按 graph/seq 变化判断）')
+  assert.match(text, /measuredSizeRef/, '须用实测尺寸确认 state.size 已最新（旧尺寸跑两遍 = 双次跳变）')
+  assert.match(text, /measured\.w !== W \|\| measured\.h !== H/, '尺寸未就绪时应跳过本帧布局/动画')
+  assert.match(text, /cancelAnimationFrame\(raf\)/, 'effect 清理须取消动画帧（F1）')
 })

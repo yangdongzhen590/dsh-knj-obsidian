@@ -16,24 +16,37 @@ const CONFIDENCE_DOT: Record<string, string> = {
   ambiguous: 'knj-dot--warn',
 }
 
-export function VaultTree({ onOpen }: { onOpen: (page: PageSummary) => void }) {
+export function VaultTree({ onOpen, root }: { onOpen: (page: PageSummary) => void; root?: string }) {
   const [pages, setPages] = useState<PageSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [noVault, setNoVault] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean> | null>(null)
 
   useEffect(() => {
-    const load = () => fetchPages()
-      .then((r) => {
-        setPages(r.pages)
-        setLoaded(true)
-        setExpanded((prev) => prev ?? initialExpanded(r.pages))
-      })
-      .catch((e) => { setError(String(e)); setLoaded(true) })
+    let cancelled = false
+    const load = () => {
+      setNoVault(false)
+      setError(null)
+      fetchPages(root)
+        .then((r) => {
+          if (cancelled) return
+          setPages(r.pages)
+          setLoaded(true)
+          setExpanded((prev) => prev ?? initialExpanded(r.pages))
+        })
+        .catch((e) => {
+          if (cancelled) return
+          const message = String(e)
+          // 409 = 本工作区没有知识库：显示空态（头部已有「初始化知识库」入口），不当错误
+          if (message.includes(': 409')) { setPages([]); setNoVault(true) } else setError(message)
+          setLoaded(true)
+        })
+    }
     load()
     window.addEventListener('wiki:pages-changed', load)
-    return () => window.removeEventListener('wiki:pages-changed', load)
-  }, [])
+    return () => { cancelled = true; window.removeEventListener('wiki:pages-changed', load) }
+  }, [root])
 
   const toggle = (cat: string) => {
     setExpanded((prev) => ({ ...(prev ?? {}), [cat]: !(prev?.[cat] ?? false) }))
@@ -41,6 +54,14 @@ export function VaultTree({ onOpen }: { onOpen: (page: PageSummary) => void }) {
 
   if (error) return <div className="knj-error"><IconRefresh size={14} />加载失败：{error}</div>
   if (!loaded) return <div className="knj-loading"><span className="knj-spinner"><IconRefresh size={14} /></span>加载中…</div>
+
+  if (noVault) {
+    return <div className="knj-empty">
+      <span className="knj-empty__icon"><IconBook size={28} /></span>
+      <div>本工作区还没有知识库</div>
+      <div>点顶部「初始化知识库」，或对 agent 说「初始化知识库」。</div>
+    </div>
+  }
 
   if (pages.length === 0) {
     return <div className="knj-empty">

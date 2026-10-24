@@ -9,24 +9,38 @@ window.__ModuleLoader__.load({
 		let react_dom = require("react-dom");
 		// src/client/api.ts
 		const BASE = "/api/obsidian-wiki";
-		async function getJson(path) {
-			const res = await fetch(path);
-			if (!res.ok) throw new Error(`wiki api ${path}: ${res.status}`);
+		/**
+		* 会话级作用域：每个请求都带 `root=<工作区根>`。
+		*
+		* 为什么不是「服务端全局当前库」：面板是按会话渲染的，多个会话可能同时挂在不同的
+		* 工作区。全局单值会被最后 activate 的那一个劫持，表现为「切换工作区后仍是旧库」
+		* （见 .wiki/concepts/会话级知识库绑定）。带 root 后每个面板只读自己工作区的库。
+		* 不带 root 的调用保持旧行为（全局当前库），供没有会话上下文的地方使用。
+		*/
+		function withRoot(path, root) {
+			const r = (root ?? "").trim();
+			if (!r) return path;
+			return `${path}${path.includes("?") ? "&" : "?"}root=${encodeURIComponent(r)}`;
+		}
+		async function getJson(path, root) {
+			const url = withRoot(path, root);
+			const res = await fetch(url);
+			if (!res.ok) throw new Error(`wiki api ${url}: ${res.status}`);
 			return res.json();
 		}
-		function fetchPages() {
-			return getJson(`${BASE}/pages`);
+		function fetchPages(root) {
+			return getJson(`${BASE}/pages`, root);
 		}
 		/** v5：磁盘原文（含 frontmatter），源码视图/编辑用。 */
-		async function fetchRawPage(id, category) {
-			const res = await fetch(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}&raw=1`);
+		async function fetchRawPage(id, category, root) {
+			const res = await fetch(withRoot(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}&raw=1`, root));
 			const data = await res.json();
 			if (!res.ok || data.error) throw new Error(data.error ?? `wiki api: ${res.status}`);
 			return data.raw ?? "";
 		}
 		/** v5：全文保存（同源 JSON POST）。成功返回解析后的页面。 */
-		async function saveRawPage(id, category, raw) {
-			const res = await fetch(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`, {
+		async function saveRawPage(id, category, raw, root) {
+			const res = await fetch(withRoot(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`, root), {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ raw })
@@ -35,15 +49,19 @@ window.__ModuleLoader__.load({
 			if (!res.ok || data.error) throw new Error(data.error ?? `save failed: ${res.status}`);
 			return data.page;
 		}
-		function fetchSearch(q, mode = "auto") {
-			return getJson(`${BASE}/search?q=${encodeURIComponent(q)}&mode=${mode}`);
+		function fetchSearch(q, mode = "auto", root) {
+			return getJson(`${BASE}/search?q=${encodeURIComponent(q)}&mode=${mode}`, root);
 		}
-		function fetchLint() {
-			return getJson(`${BASE}/lint`);
+		function fetchLint(root) {
+			return getJson(`${BASE}/lint`, root);
+		}
+		/** 图谱数据（节点/边/孤儿），按 root 取库。 */
+		function fetchGraph(root) {
+			return getJson(`${BASE}/graph`, root);
 		}
 		/** v6：重建 index.md（同源 POST）。 */
-		async function rebuildIndex() {
-			const res = await fetch(`${BASE}/rebuild-index`, {
+		async function rebuildIndex(root) {
+			const res = await fetch(withRoot(`${BASE}/rebuild-index`, root), {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: "{}"
@@ -53,8 +71,8 @@ window.__ModuleLoader__.load({
 			return { pageCount: data.pageCount ?? 0 };
 		}
 		/** v6：路径导入 md（同源 POST）。 */
-		async function importMd(path, category) {
-			const res = await fetch(`${BASE}/import`, {
+		async function importMd(path, category, root) {
+			const res = await fetch(withRoot(`${BASE}/import`, root), {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
@@ -66,8 +84,8 @@ window.__ModuleLoader__.load({
 			if (!res.ok || data.error) throw new Error(data.error ?? `import failed: ${res.status}`);
 			return data;
 		}
-		function fetchVaults() {
-			return getJson(`${BASE}/vaults`);
+		function fetchVaults(root) {
+			return getJson(`${BASE}/vaults`, root);
 		}
 		async function postVault(action, payload) {
 			const res = await fetch(`${BASE}/vault/${action}`, {
@@ -79,22 +97,19 @@ window.__ModuleLoader__.load({
 			if (!res.ok || data.error) throw new Error(data.error ?? `vault ${action} failed: ${res.status}`);
 			return data;
 		}
-		/** 按目录激活（跟工作区走）：已注册仅切换，未注册自动挂接。 */
-		const activateVault = (root) => postVault("activate", { root });
-		const switchVault = (id) => postVault("switch", { id });
 		const attachVault = (root, name) => postVault("attach", name?.trim() ? {
 			root,
 			name: name.trim()
 		} : { root });
 		const removeVault = (id) => postVault("remove", { id });
-		async function fetchCheckpoints() {
-			return (await getJson(`${BASE}/checkpoints`)).checkpoints;
+		async function fetchCheckpoints(root) {
+			return (await getJson(`${BASE}/checkpoints`, root)).checkpoints;
 		}
 		/** 从还原点回滚（同源 JSON POST）。
 		*  mode 默认 `merge`（非破坏性：只撤销快照内页面的修改，保留快照后新增页）；
 		*  `exact` = 整库回到快照（会删除快照后新增页），需显式传入。 */
-		async function restoreCheckpoint(id, mode = "merge") {
-			const res = await fetch(`${BASE}/checkpoint/restore`, {
+		async function restoreCheckpoint(id, mode = "merge", root) {
+			const res = await fetch(withRoot(`${BASE}/checkpoint/restore`, root), {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
@@ -112,18 +127,18 @@ window.__ModuleLoader__.load({
 			};
 		}
 		/** 取单个知识页（非 raw）。 */
-		async function fetchPage(id, category) {
-			const res = await fetch(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`);
+		async function fetchPage(id, category, root) {
+			const res = await fetch(withRoot(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`, root));
 			const data = await res.json();
 			if (!res.ok || data.error || !data.page) throw new Error(data.error ?? `page api: ${res.status}`);
 			return data.page;
 		}
-		function fetchSemanticStatus() {
-			return getJson(`${BASE}/semantic-status`);
+		function fetchSemanticStatus(root) {
+			return getJson(`${BASE}/semantic-status`, root);
 		}
 		/** 触发后台重建索引（立刻返回；进度靠 fetchSemanticStatus 轮询）。 */
-		async function triggerSemanticUpdate() {
-			const res = await fetch(`${BASE}/semantic-update`, {
+		async function triggerSemanticUpdate(root) {
+			const res = await fetch(withRoot(`${BASE}/semantic-update`, root), {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: "{}"
@@ -321,24 +336,39 @@ window.__ModuleLoader__.load({
 			inferred: "knj-dot--muted",
 			ambiguous: "knj-dot--warn"
 		};
-		function VaultTree({ onOpen }) {
+		function VaultTree({ onOpen, root }) {
 			const [pages, setPages] = (0, react.useState)([]);
 			const [error, setError] = (0, react.useState)(null);
 			const [loaded, setLoaded] = (0, react.useState)(false);
+			const [noVault, setNoVault] = (0, react.useState)(false);
 			const [expanded, setExpanded] = (0, react.useState)(null);
 			(0, react.useEffect)(() => {
-				const load = () => fetchPages().then((r) => {
-					setPages(r.pages);
-					setLoaded(true);
-					setExpanded((prev) => prev ?? initialExpanded(r.pages));
-				}).catch((e) => {
-					setError(String(e));
-					setLoaded(true);
-				});
+				let cancelled = false;
+				const load = () => {
+					setNoVault(false);
+					setError(null);
+					fetchPages(root).then((r) => {
+						if (cancelled) return;
+						setPages(r.pages);
+						setLoaded(true);
+						setExpanded((prev) => prev ?? initialExpanded(r.pages));
+					}).catch((e) => {
+						if (cancelled) return;
+						const message = String(e);
+						if (message.includes(": 409")) {
+							setPages([]);
+							setNoVault(true);
+						} else setError(message);
+						setLoaded(true);
+					});
+				};
 				load();
 				window.addEventListener("wiki:pages-changed", load);
-				return () => window.removeEventListener("wiki:pages-changed", load);
-			}, []);
+				return () => {
+					cancelled = true;
+					window.removeEventListener("wiki:pages-changed", load);
+				};
+			}, [root]);
 			const toggle = (cat) => {
 				setExpanded((prev) => ({
 					...prev ?? {},
@@ -359,6 +389,17 @@ window.__ModuleLoader__.load({
 					className: "knj-spinner",
 					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconRefresh, { size: 14 })
 				}), "加载中…"]
+			});
+			if (noVault) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "knj-empty",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "knj-empty__icon",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 28 })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "本工作区还没有知识库" }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "点顶部「初始化知识库」，或对 agent 说「初始化知识库」。" })
+				]
 			});
 			if (pages.length === 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "knj-empty",
@@ -444,7 +485,7 @@ window.__ModuleLoader__.load({
 			return out;
 		}
 		// src/client/SearchBox.tsx
-		function SearchBox({ onResult }) {
+		function SearchBox({ onResult, root }) {
 			const [q, setQ] = (0, react.useState)("");
 			const [busy, setBusy] = (0, react.useState)(false);
 			const [err, setErr] = (0, react.useState)(null);
@@ -453,9 +494,9 @@ window.__ModuleLoader__.load({
 				setBusy(true);
 				setErr(null);
 				try {
-					onResult((await fetchSearch(q)).candidates);
-				} catch {
-					setErr("搜索失败，请重试");
+					onResult((await fetchSearch(q, "auto", root)).candidates);
+				} catch (e) {
+					setErr(String(e).includes(": 409") ? "本工作区还没有知识库：点上方「初始化知识库」" : "搜索失败，请重试");
 				} finally {
 					setBusy(false);
 				}
@@ -507,6 +548,9 @@ window.__ModuleLoader__.load({
 		* - 「问题」展开：断链 / 孤儿页 / 缺 frontmatter 逐条可点跳转
 		* - 「工具」展开：重建索引 / 导入 md（原顶部工具条移入，释放主视觉）
 		*   v10 起：会话蒸馏入口移到边栏分段「会话蒸馏」（预填/复制启动器），此处不再重复
+		*
+		* root = 当前会话所属工作区根（2026-10-24 会话级作用域）：lint/页索引/重建/导入
+		* 都按它请求，不再读全局当前库。
 		*/
 		const CATEGORIES = [
 			{
@@ -538,7 +582,7 @@ window.__ModuleLoader__.load({
 				label: "数据结构"
 			}
 		];
-		function LintPanel({ openNote }) {
+		function LintPanel({ openNote, root }) {
 			const [report, setReport] = (0, react.useState)(null);
 			const [toolsOpen, setToolsOpen] = (0, react.useState)(false);
 			const [issuesOpen, setIssuesOpen] = (0, react.useState)(false);
@@ -555,9 +599,15 @@ window.__ModuleLoader__.load({
 				setTimeout(() => setNotice(null), 5e3);
 			};
 			(0, react.useEffect)(() => {
+				let disposed = false;
 				const load = () => {
-					fetchLint().then(setReport).catch(() => {});
-					fetchPages().then(({ pages }) => {
+					fetchLint(root).then((r) => {
+						if (!disposed) setReport(r);
+					}).catch(() => {
+						if (!disposed) setReport(null);
+					});
+					fetchPages(root).then(({ pages }) => {
+						if (disposed) return;
 						const m = /* @__PURE__ */ new Map();
 						for (const p of pages) m.set(p.id, {
 							category: p.category,
@@ -568,12 +618,15 @@ window.__ModuleLoader__.load({
 				};
 				load();
 				window.addEventListener("wiki:pages-changed", load);
-				return () => window.removeEventListener("wiki:pages-changed", load);
-			}, []);
+				return () => {
+					disposed = true;
+					window.removeEventListener("wiki:pages-changed", load);
+				};
+			}, [root]);
 			const doRebuild = async () => {
 				setBusy("rebuild");
 				try {
-					const r = await rebuildIndex();
+					const r = await rebuildIndex(root);
 					flash(`索引已重建（${r.pageCount} 页）`);
 					window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
 				} catch (e) {
@@ -590,7 +643,7 @@ window.__ModuleLoader__.load({
 				}
 				setBusy("import");
 				try {
-					const r = await importMd(p, importCategory);
+					const r = await importMd(p, importCategory, root);
 					const parts = [
 						r.imported ? `暂存 ${r.imported}` : null,
 						r.updated ? `更新 ${r.updated}` : null,
@@ -5288,8 +5341,12 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				return SAFE_IMG_SRC_RE.test(url) || !hasScheme ? `<img src="${url}" alt="${alt}">` : alt;
 			}).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\*([^*]+)\*/g, "<em>$1</em>").replace(/~~([^~]+)~~/g, "<del>$1</del>");
 		}
-		/** 铺开限幅：与现状相比最多铺开/收拢到这个倍数，避免极端面板把图拉散或压扁。 */
+		/** 铺开限幅：横向与纵向分开——横向还要给左右两侧标签留位，纵向只受「别把图拉成一柱香」约束。 */
 		const MAX_SPREAD = 1.8;
+		/** 纵向限幅：只有高画布（侧栏）吃这份放宽，宽画布（全屏）保持与横向同一上限。 */
+		function verticalSpreadCap(width, height) {
+			return height > width ? 3 : MAX_SPREAD;
+		}
 		const MIN_SPREAD = .6;
 		/** 少于这个宽度就不再画标签（仅为保证「绝不越界」这条不变量）。 */
 		const MIN_LABEL_ROOM = 16;
@@ -5355,7 +5412,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			const availH = height - 32 - 16;
 			const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
 			const kx = spanX > 1 ? Math.max(MIN_SPREAD, Math.min(MAX_SPREAD, availW / spanX)) : 1;
-			const ky = spanY > 1 ? Math.max(MIN_SPREAD, Math.min(MAX_SPREAD, availH / spanY)) : 1;
+			const ky = spanY > 1 ? Math.max(MIN_SPREAD, Math.min(verticalSpreadCap(width, height), availH / spanY)) : 1;
 			for (const n of nodes) {
 				n.x = cx + (n.x - cx) * kx;
 				n.y = cy + (n.y - cy) * ky;
@@ -5367,12 +5424,32 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				ky
 			};
 		}
+		/**
+		* 平滑步进缓动 f(t)=3t²−2t³：峰值斜率 1.5。
+		* 选它而不是标准 easeInOutCubic（峰值斜率 3）：同一时长下前者的单帧最大位移只有后者的 1/2，
+		* 这正是「开场不要暴走」要的数学保证。入参越界自动夹到 [0,1]。
+		*/
+		function easeInOutSmoothstep(t) {
+			if (!(t > 0)) return 0;
+			if (t >= 1) return 1;
+			return t * t * (3 - 2 * t);
+		}
+		/**
+		* 是否播放入场动画。
+		* @param nodeCount - 本次渲染的节点数（> ANIMATE_MAX_NODES 时直接静态终态）。
+		* @param reducedMotion - 用户/系统要求「减少动态效果」（prefers-reduced-motion: reduce）。
+		*/
+		function shouldAnimate(nodeCount, reducedMotion = false) {
+			if (reducedMotion) return false;
+			return nodeCount <= 300;
+		}
 		// src/client/GraphView.tsx
 		/**
-		* 图谱视图（v10 页签式全屏）：
+		* 图谱视图（v10 页签式全屏，v13 入场动效克制化）：
 		* - 嵌入态：自适应画布 + 全屏按钮；点节点 → 直接开笔记工作台
 		* - 全屏态（Portal 到 body）：顶部页签栏 —— 「图谱」页签 + 点击节点打开的页面页签
-		* - 节点命中用 pointerup（布局动画逐帧重写 svg 子元素会让 click 丢失，表现为要点两次）
+		* - 节点命中用 pointerup（动画逐帧重写 svg 子元素会让 click 丢失，表现为要点两次）
+		* - v13：先同步收敛出终态（力场参数不变），再按固定时长缓动入场；大库/减少动效直接静态
 		*/
 		const ESC_MAP = {
 			"<": "&lt;",
@@ -5430,7 +5507,15 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				spring: .04
 			};
 		}
-		function GraphView({ onOpenNote }) {
+		/** 系统级「减少动态效果」开关；不支持的宿主/测试环境按「不减少」处理。 */
+		function prefersReducedMotion() {
+			try {
+				return Boolean(globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+			} catch {
+				return false;
+			}
+		}
+		function GraphView({ onOpenNote, root }) {
 			const [graph, setGraph] = (0, react.useState)(null);
 			const [error, setError] = (0, react.useState)(null);
 			const [fullscreen, setFullscreen] = (0, react.useState)(false);
@@ -5445,17 +5530,24 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			});
 			const svgRef = (0, react.useRef)(null);
 			const wrapRef = (0, react.useRef)(null);
+			/** 上一次播过入场动画的「图 + seq」：只有它们变了才重播，单纯尺寸变化不重播。 */
+			const lastAnimatedRef = (0, react.useRef)({
+				graph: null,
+				seq: -1
+			});
+			/** 最近一次实测画布尺寸：布局 effect 用它确认 state 里的 size 已是最新（避免用旧尺寸跑两遍）。 */
+			const measuredSizeRef = (0, react.useRef)(null);
 			const [idIndex, setIdIndex] = (0, react.useState)(null);
 			const active = activeKey === "graph";
 			const [seq, setSeq] = (0, react.useState)(0);
 			(0, react.useEffect)(() => {
 				let cancelled = false;
-				fetch("/api/obsidian-wiki/graph").then((r) => r.json()).then((d) => {
+				fetchGraph(root).then((d) => {
 					if (!cancelled) setGraph(d);
 				}).catch((e) => {
 					if (!cancelled) setError(String(e));
 				});
-				fetchPages().then(({ pages }) => {
+				fetchPages(root).then(({ pages }) => {
 					if (cancelled) return;
 					const m = /* @__PURE__ */ new Map();
 					for (const p of pages) m.set(p.id, {
@@ -5467,19 +5559,19 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				return () => {
 					cancelled = true;
 				};
-			}, []);
+			}, [root]);
 			(0, react.useEffect)(() => {
 				const measure = () => {
 					const el = wrapRef.current;
 					if (!el || !active) return;
-					if (fullscreen) setSize({
-						w: Math.max(320, el.clientWidth || 320),
-						h: Math.max(200, el.clientHeight || 300)
-					});
-					else setSize({
-						w: Math.max(320, el.clientWidth || 320),
-						h: Math.max(200, (el.clientHeight || 300) - 86)
-					});
+					const next = {
+						w: Math.max(200, el.clientWidth || 320),
+						h: Math.max(200, el.clientHeight || 320)
+					};
+					const prev = measuredSizeRef.current;
+					if (prev && prev.w === next.w && prev.h === next.h) return;
+					measuredSizeRef.current = next;
+					setSize(next);
 				};
 				measure();
 				const ro = new ResizeObserver(() => measure());
@@ -5493,6 +5585,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					window.removeEventListener("keydown", onKey);
 				};
 			}, [
+				graph,
 				fullscreen,
 				active,
 				seq
@@ -5501,12 +5594,18 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				if (!graph || !svgRef.current || !active) return;
 				const svg = svgRef.current;
 				const W = size.w, H = size.h;
+				const measured = measuredSizeRef.current;
+				if (measured && (measured.w !== W || measured.h !== H)) return;
 				const nodes = graph.nodes.map((n, i) => ({
 					...n,
 					x: W / 2 + Math.cos(i * 2.4) * Math.min(120, Math.max(60, W / 5)),
 					y: H / 2 + Math.sin(i * 2.4) * Math.min(100, Math.max(50, H / 5)),
 					vx: 0,
 					vy: 0
+				}));
+				const from = nodes.map((n) => ({
+					x: n.x,
+					y: n.y
 				}));
 				const byId = new Map(nodes.map((n) => [n.id, n]));
 				const edges = graph.edges.filter((e) => byId.has(e.source) && byId.has(e.target)).map((e) => ({
@@ -5516,9 +5615,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				}));
 				const orphans = new Set(graph.orphanIds);
 				const { frameLimit, spring } = layoutParams(nodes.length);
-				let frame = 0, raf = 0;
 				const DEG = .85, REP = 1200, TARGET = 120;
-				const tick = () => {
+				/** 一步力场迭代（只改坐标、不绘制）——参数与旧实现完全一致，保证终态几何不变。 */
+				const integrate = () => {
 					for (const a of nodes) {
 						a.vx *= DEG;
 						a.vy *= DEG;
@@ -5547,14 +5646,6 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						n.x = Math.max(24, Math.min(W - 24, n.x));
 						n.y = Math.max(24, Math.min(H - 24, n.y));
 					}
-					paint();
-					frame++;
-					if (frame < frameLimit) raf = requestAnimationFrame(tick);
-					else {
-						spreadToFill(nodes, W, H);
-						placeLabels(nodes, W, H, measureLabel);
-						paint();
-					}
 				};
 				const measureLabel = makeLabelMeasurer();
 				const paint = () => {
@@ -5573,7 +5664,36 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					}
 					svg.innerHTML = out;
 				};
-				raf = requestAnimationFrame(tick);
+				for (let frame = 0; frame < frameLimit; frame += 1) integrate();
+				spreadToFill(nodes, W, H);
+				placeLabels(nodes, W, H, measureLabel);
+				const target = nodes.map((n) => ({
+					x: n.x,
+					y: n.y
+				}));
+				const last = lastAnimatedRef.current;
+				const replay = last.graph !== graph || last.seq !== seq;
+				lastAnimatedRef.current = {
+					graph,
+					seq
+				};
+				if (!replay || !shouldAnimate(nodes.length, prefersReducedMotion())) {
+					paint();
+					return;
+				}
+				let raf = 0;
+				const startedAt = performance.now();
+				const step = () => {
+					const t = (performance.now() - startedAt) / 640;
+					const e = easeInOutSmoothstep(t);
+					for (let i = 0; i < nodes.length; i += 1) {
+						nodes[i].x = from[i].x + (target[i].x - from[i].x) * e;
+						nodes[i].y = from[i].y + (target[i].y - from[i].y) * e;
+					}
+					paint();
+					if (t < 1) raf = requestAnimationFrame(step);
+				};
+				step();
 				return () => {
 					cancelAnimationFrame(raf);
 				};
@@ -5748,6 +5868,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 								className: "knj-fspage",
 								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PageTabView, {
+									root,
 									refPage: tabs.find((t) => t.key === activeKey && t.kind === "page"),
 									idIndex,
 									onOpenRef: (p) => openPageTab(p),
@@ -5766,7 +5887,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				})
 			}), document.body) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "knj-vcol knj-graph-embed",
-				style: { padding: "4px 12px 12px" },
+				style: {
+					flex: "1 1 auto",
+					minHeight: 0,
+					padding: "4px 12px 12px"
+				},
 				children: [
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "knj-graph-head",
@@ -5795,18 +5920,14 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 							onPointerUp: handleNodePointerUp,
 							viewBox: `0 0 ${size.w} ${size.h}`,
 							className: "knj-graph-svg",
-							preserveAspectRatio: "xMidYMid meet",
-							style: {
-								width: "100%",
-								height: size.h
-							}
+							preserveAspectRatio: "xMidYMid meet"
 						})
 					})
 				]
 			});
 		}
 		/** 页签内容：读页渲染；页内 wikilink 打开/激活对应页签。 */
-		function PageTabView({ refPage, idIndex, onOpenRef, onOpenFull }) {
+		function PageTabView({ refPage, idIndex, onOpenRef, onOpenFull, root }) {
 			const [state, setState] = (0, react.useState)({
 				loading: true,
 				html: null,
@@ -5828,7 +5949,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					err: null
 				});
 				const { ref } = refPage;
-				fetchPage(ref.id, ref.category).then((page) => {
+				fetchPage(ref.id, ref.category, root).then((page) => {
 					if (!cancelled) setState({
 						loading: false,
 						html: renderMarkdown(page.body),
@@ -5844,7 +5965,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				return () => {
 					cancelled = true;
 				};
-			}, [refPage?.ref.id, refPage?.ref.category]);
+			}, [
+				refPage?.ref.id,
+				refPage?.ref.category,
+				root
+			]);
 			const onContentClick = (ev) => {
 				const a = ev.target?.closest?.("a[data-wikilink]");
 				if (!a) return;
@@ -5920,7 +6045,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		* 为什么必须是一个显式按钮：真实库首次重建包含模型加载（本机实测冷启动约 1.5 分钟，之后约 40ms/篇），
 		* 不能让它变成界面上一次没有解释的卡顿；进度靠轮询 status（待嵌入数在下降）。
 		*/
-		function SemanticIndexPanel() {
+		function SemanticIndexPanel({ root } = {}) {
 			const [status, setStatus] = (0, react.useState)(null);
 			const [message, setMessage] = (0, react.useState)("");
 			const [busy, setBusy] = (0, react.useState)(false);
@@ -5929,7 +6054,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			(0, react.useEffect)(() => {
 				aliveRef.current = true;
 				const load = () => {
-					fetchSemanticStatus().then((s) => {
+					fetchSemanticStatus(root).then((s) => {
 						if (aliveRef.current) setStatus(s);
 					}).catch(() => {
 						if (aliveRef.current) setStatus(null);
@@ -5946,24 +6071,24 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					window.removeEventListener("wiki:pages-changed", load);
 					window.removeEventListener("wiki:vault-changed", load);
 				};
-			}, []);
+			}, [root]);
 			(0, react.useEffect)(() => {
 				if (!status?.refreshing) return;
 				const timer = setInterval(() => {
 					setTick((v) => v + 1);
-					fetchSemanticStatus().then((s) => {
+					fetchSemanticStatus(root).then((s) => {
 						if (!aliveRef.current) return;
 						setStatus(s);
 						if (!s.refreshing) setMessage(s.lastRun?.ok ? `索引已更新：${s.lastRun.documents} 篇 / ${s.lastRun.chunks} 块，用时 ${formatSeconds(s.lastRun.durationMs)}` : s.lastRun?.note ?? "索引更新结束，但没有可报告的细节");
 					}).catch(() => {});
 				}, 2e3);
 				return () => clearInterval(timer);
-			}, [status?.refreshing]);
+			}, [status?.refreshing, root]);
 			const update = async () => {
 				setBusy(true);
 				setMessage("");
 				try {
-					const result = await triggerSemanticUpdate();
+					const result = await triggerSemanticUpdate(root);
 					setStatus(result.status);
 					setMessage(result.running ? "正在重建索引（首次包含模型加载，通常 1–2 分钟）…" : result.status.note ?? "已提交，但未开始");
 				} catch (error) {
@@ -6172,7 +6297,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			return text.split(",").map((s) => s.trim()).filter(Boolean);
 		}
 		/** 知识蒸馏启动器：代码结构采集 / 会话蒸馏统一入口，新建会话把指令交给 Agent。 */
-		function KnowledgeDistillLauncher({ startAgentSession, sessions, workspaces }) {
+		function KnowledgeDistillLauncher({ startAgentSession, sessions, workspaces, root }) {
 			const [scope, setScope] = (0, react.useState)("enum");
 			const [range, setRange] = (0, react.useState)("3");
 			const [sessionIds, setSessionIds] = (0, react.useState)([]);
@@ -6188,14 +6313,14 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			(0, react.useEffect)(() => {
 				let alive = true;
 				const refresh = () => {
-					fetchVaults().then((r) => {
+					fetchVaults(root).then((r) => {
 						if (!alive) return;
 						setVaultRoot(r.current?.root ?? null);
 						setInitialized(r.vaults.find((v) => v.id === r.current?.id)?.initialized ?? null);
 					}).catch(() => {
 						if (alive) setInitialized(null);
 					});
-					fetchCheckpoints().then((cs) => {
+					fetchCheckpoints(root).then((cs) => {
 						if (alive) setCheckpoints(cs);
 					}).catch(() => {});
 				};
@@ -6215,7 +6340,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					window.removeEventListener("wiki:vault-changed", onVaultChanged);
 					window.removeEventListener("focus", onFocus);
 				};
-			}, []);
+			}, [root]);
 			(0, react.useEffect)(() => {
 				let alive = true;
 				const read = () => {
@@ -6300,16 +6425,22 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			*  与「注册 ≠ 初始化」契约冲突（初始化是显式的 wiki_init 动作）；而"状态未知"曾被 `?? true`
 			*  兜底成"已初始化"，导致预填一个不存在的库路径（2026-10-13 实测）。 */
 			const canStartSession = Boolean(vaultRoot) && initialized === true;
-			const send = async (text, okText) => {
-				if (!vaultRoot) {
-					setMessage("未能确定当前库根目录（/vaults 读取失败）：请点刷新后重试，或改用「复制触发指令」。");
+			/**
+			* 真正把指令交给 Agent（新建会话 + 预填）：**不检查已初始化态**。
+			*
+			* 为什么必须单独拆出来（2026-10-24 实测）：未初始化工作区里点「初始化知识库」什么都
+			* 没发生——旧实现 initVault 走 send()，而 send() 开头两道守卫先 return：
+			*   1) /vaults 对未初始化工作区返回 current=null → vaultRoot=null → "未能确定库根"；
+			*   2) initialized !== true → 提示"请先点上面的「初始化知识库」"→ 点初始化让你先点初始化（死循环）。
+			* 初始化动作本身必须能跑，库根在未初始化时回退到会话工作区 root（面板已知）。
+			*/
+			const startInstruction = async (text, okText) => {
+				const targetRoot = vaultRoot ?? root;
+				if (!targetRoot) {
+					setMessage("未能确定当前库根目录（/vaults 读取失败且宿主未给会话工作区）：请点刷新后重试，或改用「复制触发指令」。");
 					return;
 				}
-				if (initialized !== true) {
-					setMessage(initialized === false ? "当前库尚未初始化（磁盘上没有 .wiki）：请先点上面的「初始化知识库」，建好后再蒸馏；也可「复制触发指令」自行处理。" : "当前库的初始化状态未知（/vaults 未返回该库）：请点刷新后重试；为避免把知识写进一个不存在的库，这里不预填指令。");
-					return;
-				}
-				const res = startAgentSession ? await startAgentSession(text, vaultRoot) : {
+				const res = startAgentSession ? await startAgentSession(text, targetRoot) : {
 					ok: false,
 					message: "宿主未提供新建会话能力"
 				};
@@ -6322,13 +6453,24 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				}
 				setMessage(res.message ? `${okText}（注意：${res.message}）` : okText);
 			};
+			const send = async (text, okText) => {
+				if (!vaultRoot) {
+					setMessage("未能确定当前库根目录（/vaults 读取失败）：请点刷新后重试，或改用「复制触发指令」。");
+					return;
+				}
+				if (initialized !== true) {
+					setMessage(initialized === false ? "当前库尚未初始化（磁盘上没有 .wiki）：请先点上面的「初始化知识库」，建好后再蒸馏；也可「复制触发指令」自行处理。" : "当前库的初始化状态未知（/vaults 未返回该库）：请点刷新后重试；为避免把知识写进一个不存在的库，这里不预填指令。");
+					return;
+				}
+				await startInstruction(text, okText);
+			};
 			const initVault = async () => {
 				const text = [
 					"请初始化当前工作区的知识库：调用 wiki_init 工具创建 .wiki 脚手架",
 					"（index.md / .manifest.json / concepts、entities、references、synthesis、projects、dictionaries、tables 目录）。",
 					"完成后报告：库根路径、是否新建、当前页数。不要在此步骤采集或写入知识页。"
 				].join("");
-				await send(text, "已新建会话并预填初始化指令：切到该新会话后回车发送，Agent 会用 wiki_init 建库，建好后回来看板蒸馏");
+				await startInstruction(text, "已新建会话并预填初始化指令：切到该新会话后回车发送，Agent 会用 wiki_init 建库，建好后回来看板蒸馏");
 			};
 			const toggleSession = (id) => {
 				setSessionIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
@@ -6656,7 +6798,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 									const question = mode === "merge" ? `回滚到还原点 ${cp.id}？\n只撤销该快照内页面的改动（批次改坏的恢复原样），快照之后新增的页面会保留。` : `精确回滚到还原点 ${cp.id}？\n整库回到该快照：快照之后新增的页面会被删除（可能是其它会话的正当产物）。`;
 									if (!window.confirm(question)) return;
 									try {
-										const r = await restoreCheckpoint(cp.id, mode);
+										const r = await restoreCheckpoint(cp.id, mode, root);
 										setMessage(mode === "merge" ? `已回滚到 ${cp.id}：恢复 ${r.restored} 页，保留快照后新页 ${r.keptNewer} 页（现 ${r.pageCount} 页），索引已重建` : `已精确回滚到 ${cp.id}（现 ${r.pageCount} 页，快照后新增页已删除），索引已重建`);
 										window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
 									} catch (e) {
@@ -6705,35 +6847,90 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						style: { color: "var(--knj-text)" },
 						children: message
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SemanticIndexPanel, {})
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SemanticIndexPanel, { root })
 				]
 			});
 		}
+		// src/client/session-root.ts
+		/** Path comparison key: Windows case/separator insensitive, no trailing slash. */
+		function normalizeRoot(path) {
+			return (path ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+		}
+		/**
+		* Resolve the workspace root that a session's sidebar should read.
+		*
+		* Order:
+		*   1. the workspace row that accounts the session (`sessionIds` contains it)
+		*      -> that row's path (authoritative: a session may be re-homed);
+		*   2. the deepest tracked workspace that is an ancestor of the session cwd
+		*      (session cwd is often a subdirectory of the workspace);
+		*   3. the cwd itself (an unregistered directory still gets its own answer).
+		*
+		* Returns undefined when the session has neither an owning workspace nor a cwd:
+		* callers must then keep the old global behaviour instead of guessing.
+		*/
+		function resolveSessionRoot(input) {
+			const items = input.workspaces ?? [];
+			const sessionId = (input.sessionId ?? "").trim();
+			if (sessionId) {
+				const owning = items.find((w) => Array.isArray(w.sessionIds) && w.sessionIds.includes(sessionId));
+				if (owning && typeof owning.path === "string" && owning.path.trim()) return owning.path;
+			}
+			const cwd = (input.cwd ?? "").trim();
+			if (!cwd) return void 0;
+			const key = normalizeRoot(cwd);
+			let best;
+			let bestLength = -1;
+			for (const w of items) {
+				if (typeof w.path !== "string") continue;
+				const p = normalizeRoot(w.path);
+				if (!p) continue;
+				if (key === p || key.startsWith(`${p}/`)) {
+					if (p.length > bestLength) {
+						best = w.path;
+						bestLength = p.length;
+					}
+				}
+			}
+			return best ?? cwd;
+		}
 		// src/client/VaultHeader.tsx
 		/**
-		* v7 vault 头部（设计 v2）：当前库身份（名称+路径）、切换下拉、新建/挂接/移除。
-		* - 挂载时按当前工作区激活库（跟随工作区走；无 workspaces 服务时降级为手动切换）
-		* - 切换/变更后回调 onVaultChanged，由上层刷新树/lint/图谱
-		* 样式全部走宿主令牌（styles.ts），随宿主浅/深主题自适应。
+		* v7 vault 头部（2026-10-24 改为**会话级作用域**）。
+		*
+		* 旧实现按 `workspaces.list.getSnapshot().recentWorkspaceId` +
+		* `sessions.list.getSnapshot().current` 轮询调度 activate。DSH 0.2 的两个快照里
+		* 都没有这两个字段（SessionListState = ids/byId/phase/projectionsBySession；
+		* WorkspaceState = items/archivedSessionIds/pinnedSessionIds/state/phase/error），
+		* 于是跟随目标恒为 undefined，面板停在旧库——「切换工作区后仍是旧库」。
+		*
+		* 新契约：root（= 当前会话所属工作区根，由 WikiSidebar 用 session-root.ts 算出）
+		* 作为唯一输入；库身份/页数/未初始化态全部由 `/vaults?root=` 回填，不再写全局
+		* currentVaultId，因此多个会话的面板互不干扰。下拉「切换知识库」= 本面板的临时
+		* 覆盖（view-only），「跟随工作区」可一键还原。
 		*/
-		/** 取工作区 id：兼容 workspaceId（现行契约）与 id（旧版/窄化面）。 */
-		function workspaceIdOf(w) {
-			return w?.workspaceId ?? w?.id;
-		}
 		const SOURCE_LABEL = {
 			cwd: "默认",
 			workspace: "工作区",
 			attached: "挂接"
 		};
-		function VaultHeader({ workspaces, sessions, startAgentSession, onVaultChanged }) {
+		/** 路径尾段（展示用；不引入 node:path，客户端无该模块）。 */
+		function shortDir(path) {
+			const parts = path.split(/[\\/]/).filter(Boolean);
+			return parts[parts.length - 1] ?? path;
+		}
+		function VaultHeader({ root, workspaces, startAgentSession, onVaultChanged }) {
 			const [current, setCurrent] = (0, react.useState)(null);
 			const [vaults, setVaults] = (0, react.useState)([]);
+			const [uninitialized, setUninitialized] = (0, react.useState)(false);
 			const [notice, setNotice] = (0, react.useState)(null);
 			const [manageOpen, setManageOpen] = (0, react.useState)(false);
 			const [formPath, setFormPath] = (0, react.useState)("");
 			const [formName, setFormName] = (0, react.useState)("");
 			const [busy, setBusy] = (0, react.useState)(false);
-			const activatedRootRef = (0, react.useRef)(null);
+			/** 本面板的临时库覆盖（下拉切换）；不写全局 currentVaultId。 */
+			const [overrideRoot, setOverrideRoot] = (0, react.useState)(void 0);
+			const effectiveRoot = overrideRoot ?? root;
 			const flash = (text, kind = "ok") => {
 				setNotice({
 					text,
@@ -6743,91 +6940,43 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			};
 			const load = async () => {
 				try {
-					const r = await fetchVaults();
+					const r = await fetchVaults(effectiveRoot);
 					setCurrent(r.current);
 					setVaults(r.vaults);
+					setUninitialized(Boolean(r.uninitialized));
 				} catch (e) {
 					flash(`库列表加载失败：${e instanceof Error ? e.message : String(e)}`, "err");
 				}
 			};
 			(0, react.useEffect)(() => {
-				load();
-				if (!workspaces) return;
-				let disposed = false;
-				const step = () => {
-					try {
-						const wsSnap = workspaces.list.getSnapshot();
-						let ssSnap;
-						try {
-							ssSnap = sessions?.list.getSnapshot();
-						} catch {
-							ssSnap = void 0;
-						}
-						if (disposed) return;
-						if (!(wsSnap.baselinesReady || wsSnap.phase === "ready")) return;
-						let targetRoot;
-						const currentId = ssSnap?.current;
-						if (currentId) {
-							const owning = (wsSnap.items ?? []).find((w) => w.sessionIds?.includes(currentId));
-							if (owning?.path) targetRoot = owning.path;
-							else {
-								const cwd = ssSnap?.byId?.[currentId]?.cwd;
-								if (cwd) targetRoot = cwd;
-							}
-						}
-						targetRoot ??= ((wsSnap.items ?? []).find((w) => workspaceIdOf(w) === wsSnap.recentWorkspaceId) ?? wsSnap.items?.[0])?.path;
-						if (!targetRoot || disposed || activatedRootRef.current === targetRoot) return;
-						activatedRootRef.current = targetRoot;
-						activateVault(targetRoot).then((r) => {
-							if (disposed) return;
-							setCurrent(r.current);
-							setVaults(r.vaults);
-							onVaultChanged();
-						}).catch(() => {});
-					} catch (e) {
-						console.warn("[knj] vault follow step failed:", String(e));
-					}
-				};
-				step();
-				const timer = setInterval(step, 2e3);
-				const unsubWs = workspaces.list.subscribe(step);
-				const unsubSs = sessions?.list.subscribe(step);
-				return () => {
-					disposed = true;
-					clearInterval(timer);
-					unsubWs();
-					unsubSs?.();
-				};
-			}, [workspaces, sessions]);
-			const handleSwitch = async (id) => {
+				setOverrideRoot(void 0);
+			}, [root]);
+			(0, react.useEffect)(() => {
+				setCurrent(null);
+				setUninitialized(false);
+				load().catch(() => {});
+			}, [effectiveRoot]);
+			const handleSwitch = (id) => {
 				if (!id || id === current?.id) return;
-				setBusy(true);
-				try {
-					const r = await switchVault(id);
-					setCurrent(r.current);
-					setVaults(r.vaults);
-					onVaultChanged();
-				} catch (e) {
-					flash(`切换失败：${e instanceof Error ? e.message : String(e)}`, "err");
-				} finally {
-					setBusy(false);
-				}
+				const target = vaults.find((v) => v.id === id);
+				if (!target) return;
+				setOverrideRoot(target.root);
+				onVaultChanged();
 			};
 			const doAttach = async () => {
-				const root = formPath.trim();
-				if (!root) {
+				const path = formPath.trim();
+				if (!path) {
 					flash("请填写库目录（绝对路径）", "err");
 					return;
 				}
 				setBusy(true);
 				try {
-					const r = await attachVault(root, formName.trim() || void 0);
-					setCurrent(r.current);
-					setVaults(r.vaults);
+					const r = await attachVault(path, formName.trim() || void 0);
 					setManageOpen(false);
 					setFormPath("");
 					setFormName("");
-					flash(`已挂接/新建：${r.current?.name ?? root}`);
+					flash(`已挂接/新建：${r.current?.name ?? path}`);
+					setOverrideRoot(path);
 					onVaultChanged();
 				} catch (e) {
 					flash(`挂接失败：${e instanceof Error ? e.message : String(e)}`, "err");
@@ -6843,7 +6992,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			].join("");
 			const doInit = async () => {
 				const text = initInstruction();
-				const res = startAgentSession ? await startAgentSession(text, current?.root) : {
+				const targetRoot = current?.root ?? effectiveRoot;
+				const res = startAgentSession ? await startAgentSession(text, targetRoot) : {
 					ok: false,
 					message: "宿主未提供新建会话能力"
 				};
@@ -6864,10 +7014,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				if (!window.confirm(`从列表中移除知识库「${current.name}」？\n不会删除磁盘上的任何文件。`)) return;
 				setBusy(true);
 				try {
-					const r = await removeVault(current.id);
-					setCurrent(r.current);
-					setVaults(r.vaults);
+					await removeVault(current.id);
 					flash(`已移除「${current.name}」`);
+					setOverrideRoot(void 0);
 					onVaultChanged();
 				} catch (e) {
 					flash(`移除失败：${e instanceof Error ? e.message : String(e)}`, "err");
@@ -6875,6 +7024,10 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					setBusy(false);
 				}
 			};
+			const followedByWorkspace = Boolean(overrideRoot && root && normalizeRoot(overrideRoot) !== normalizeRoot(root));
+			const selectValue = Boolean(current?.id) && vaults.some((v) => v.id === current.id) ? current.id : "__follow__";
+			const displayRoot = current?.root ?? effectiveRoot;
+			const followLabel = current?.name ?? (effectiveRoot ? shortDir(effectiveRoot) : "当前工作区");
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "knj-vault",
 				children: [
@@ -6883,30 +7036,41 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						children: [
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 								className: "knj-vault__name",
-								title: current?.name,
+								title: current?.name ?? displayRoot,
 								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 15 }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 									className: "knj-vault__name-text",
-									children: current ? current.name : "知识库"
+									children: current ? current.name : effectiveRoot ? "本工作区没有知识库" : "知识库"
 								})]
 							}),
-							current && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							displayRoot && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 								className: "knj-vault__path",
-								title: current.root,
-								children: current.root
+								title: displayRoot,
+								children: displayRoot
 							}),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
-							current && !(vaults.find((v) => v.id === current.id)?.initialized ?? true) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							effectiveRoot && uninitialized && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 								type: "button",
 								className: "knj-btn knj-btn--sm knj-btn--primary",
 								disabled: busy,
-								title: `此工作区还没有 .wiki，点此把初始化交给当前对话 Agent（wiki_init）`,
+								title: "此工作区还没有 .wiki，点此把初始化交给当前对话 Agent（wiki_init）",
 								onClick: doInit,
 								children: "初始化知识库"
 							}),
-							current && !(vaults.find((v) => v.id === current.id)?.initialized ?? true) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							effectiveRoot && uninitialized && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 								className: "knj-chip knj-chip--neutral",
 								title: "磁盘上还没有 .wiki：注册 ≠ 建库",
 								children: "未初始化"
+							}),
+							followedByWorkspace && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "knj-btn knj-btn--sm",
+								disabled: busy,
+								title: `本面板临时切到了别的库；点此回到当前工作区（${root}）`,
+								onClick: () => {
+									setOverrideRoot(void 0);
+									onVaultChanged();
+								},
+								children: "跟随工作区"
 							}),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 								type: "button",
@@ -6935,13 +7099,13 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 						className: "knj-select knj-vault__select",
-						value: current?.id ?? "",
+						value: selectValue,
 						onChange: (e) => handleSwitch(e.target.value),
 						disabled: busy,
-						title: "切换知识库",
-						children: [vaults.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-							value: "",
-							children: "（无知识库）"
+						title: "切换知识库（只影响本面板，不改全局当前库）",
+						children: [selectValue === "__follow__" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("option", {
+							value: "__follow__",
+							children: [followLabel, uninitialized ? " · 未初始化" : ""]
 						}), vaults.map((v) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("option", {
 							value: v.id,
 							children: [
@@ -7004,32 +7168,60 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		}
 		// src/client/WikiSidebar.tsx
 		/**
-		* 知识库边栏标签（设计 v2）：
-		* - 顶部：vault 头部（当前库身份 + 切换 + 新建/挂接/移除，v7）
+		* 知识库边栏标签（设计 v2，2026-10-24 会话级作用域）：
+		* - 顶部：vault 头部（当前工作区的库身份 + 切换 + 新建/挂接/移除，v7）
 		* - 搜索（图标输入框 + 加载态）
 		* - 浏览/图谱分段切换；内容区随搜索结果 / 树 / 图谱切换
 		* - 底部状态条（LintPanel）：页数 + 健康度；「问题」「工具」面板展开
+		*
+		* root = 当前会话所属工作区根。0.2 的 pane-tab seat 按会话渲染并注入
+		* `sessionId` + `useSessions`；index.ts 的 SeatBoundWikiBody 用它们取到会话 cwd，
+		* 这里再用 session-root.ts 的纯函数解析成工作区根，全树的数据请求都带上它。
 		*/
-		function WikiSidebar({ openNote, workspaces, sessions, startAgentSession }) {
+		function WikiSidebar({ openNote, workspaces, sessions, startAgentSession, sessionId, sessionCwd, build }) {
 			const [results, setResults] = (0, react.useState)(null);
 			const [view, setView] = (0, react.useState)("browse");
 			const [vaultVersion, setVaultVersion] = (0, react.useState)(0);
+			const [workspaceTick, setWorkspaceTick] = (0, react.useState)(0);
+			(0, react.useEffect)(() => {
+				if (!workspaces?.list?.subscribe) return;
+				return workspaces.list.subscribe(() => setWorkspaceTick((v) => v + 1));
+			}, [workspaces]);
+			const workspaceItems = (() => {
+				try {
+					return workspaces?.list.getSnapshot()?.items ?? [];
+				} catch {
+					return [];
+				}
+			})();
+			const root = (0, react.useMemo)(() => resolveSessionRoot({
+				sessionId,
+				cwd: sessionCwd,
+				workspaces: workspaceItems
+			}), [
+				sessionId,
+				sessionCwd,
+				workspaceTick
+			]);
 			/** v7：库切换后清掉旧库的搜索结果、刷新树/lint、重挂载图谱。 */
 			const handleVaultChanged = () => {
 				setResults(null);
 				setVaultVersion((v) => v + 1);
-				window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
+				if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
 			};
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "knj-wiki knj-vcol",
 				children: [
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultHeader, {
+						root,
 						workspaces,
-						sessions,
 						startAgentSession,
 						onVaultChanged: handleVaultChanged
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SearchBox, { onResult: setResults }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SearchBox, {
+						onResult: setResults,
+						root
+					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						style: { padding: "8px 12px 4px" },
 						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -7058,11 +7250,15 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						})
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "knj-grow knj-scroll",
-						children: view === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GraphView, { onOpenNote: openNote }) }, vaultVersion) : view === "collect" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(KnowledgeDistillLauncher, {
+						className: view === "graph" ? "knj-grow knj-graph-host" : "knj-grow knj-scroll",
+						children: view === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GraphView, {
+							onOpenNote: openNote,
+							root
+						}) }, `${vaultVersion}:${root ?? ""}`) : view === "collect" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(KnowledgeDistillLauncher, {
 							startAgentSession,
 							sessions,
-							workspaces
+							workspaces,
+							root
 						}) : results !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: "knj-vcol",
 							children: [
@@ -7124,9 +7320,34 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 									]
 								}, c.id))
 							]
-						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultTree, { onOpen: (p) => openNote(p.id, p.category, p.title) })
+						}) : root === void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "knj-empty",
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "knj-empty__icon",
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconBook, { size: 26 })
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "宿主没有提供会话上下文" }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: "无法判断本工作区该用哪个知识库；可在上方下拉里手动选择。" })
+							]
+						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultTree, {
+							onOpen: (p) => openNote(p.id, p.category, p.title),
+							root
+						})
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LintPanel, { openNote })
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LintPanel, {
+						openNote,
+						root
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-pop__hint",
+						style: {
+							padding: "0 12px 8px",
+							opacity: .65
+						},
+						title: "客户端构建标记（确认浏览器加载了哪一次构建）",
+						children: ["dsh-knj-obsidian v", build ?? "dev"]
+					})
 				]
 			});
 		}
@@ -7137,7 +7358,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		* - 源码：磁盘原文（含 frontmatter）可编辑 + 复制 + 保存（错误就地展示）
 		* 断链提示由父级（持有页面索引的 NoteWorkbench）判定后经 brokenLink prop 下传。
 		*/
-		function NoteView({ note, brokenLink, onNavigate, onSaved }) {
+		function NoteView({ note, brokenLink, onNavigate, onSaved, root }) {
 			const [mode, setMode] = (0, react.useState)("preview");
 			const [content, setContent] = (0, react.useState)("");
 			const [raw, setRaw] = (0, react.useState)("");
@@ -7146,26 +7367,34 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			const [saving, setSaving] = (0, react.useState)(false);
 			const [error, setError] = (0, react.useState)(null);
 			const [notice, setNotice] = (0, react.useState)(null);
+			const pageUrl = () => {
+				const scope = root ? `&root=${encodeURIComponent(root)}` : "";
+				return `/api/obsidian-wiki/page?id=${encodeURIComponent(note.id)}&category=${encodeURIComponent(note.category)}${scope}`;
+			};
 			(0, react.useEffect)(() => {
 				let cancelled = false;
 				setError(null);
 				setNotice(null);
 				setDirty(false);
 				setMode("preview");
-				fetch(`/api/obsidian-wiki/page?id=${encodeURIComponent(note.id)}&category=${encodeURIComponent(note.category)}`).then((r) => r.json()).then((data) => {
+				fetch(pageUrl()).then((r) => r.json()).then((data) => {
 					if (cancelled) return;
 					if (data.error) setError(data.error);
 					else setContent(renderMarkdown(data.page?.body ?? ""));
 				}).catch((e) => {
 					if (!cancelled) setError(String(e));
 				});
-				fetchRawPage(note.id, note.category).then((r) => {
+				fetchRawPage(note.id, note.category, root).then((r) => {
 					if (!cancelled) setRaw(r);
 				}).catch(() => {});
 				return () => {
 					cancelled = true;
 				};
-			}, [note.id, note.category]);
+			}, [
+				note.id,
+				note.category,
+				root
+			]);
 			const onContentClick = (e) => {
 				const target = e.target.closest("a[data-wikilink]");
 				if (!target) return;
@@ -7187,10 +7416,10 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				setError(null);
 				setNotice(null);
 				try {
-					await saveRawPage(note.id, note.category, raw);
+					await saveRawPage(note.id, note.category, raw, root);
 					setDirty(false);
 					setNotice("已保存");
-					const data = await (await fetch(`/api/obsidian-wiki/page?id=${encodeURIComponent(note.id)}&category=${encodeURIComponent(note.category)}`)).json();
+					const data = await (await fetch(pageUrl())).json();
 					if (!data.error) setContent(renderMarkdown(data.page?.body ?? ""));
 					window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
 					onSaved?.();
@@ -7288,6 +7517,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		/**
 		* v5 笔记工作台（设计 v2）：历史栈导航 + wikilink 原地跳转 + 断链提示。
 		* tab.path 种子（id|category）仍是入口；站内导航不再开新标签。
+		*
+		* root = 该笔记所属会话的工作区根（由 index.ts 通过 seat sessionId/useSessions 解析），
+		* 页索引与单页读取都带着它，避免「笔记页签读到全局当前库」的跨库串页。
 		*/
 		function parseNotePath(path) {
 			if (!path) return null;
@@ -7298,14 +7530,14 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				category: path.slice(idx + 1)
 			};
 		}
-		function NoteWorkbench({ path, onPagesChanged }) {
+		function NoteWorkbench({ path, onPagesChanged, root }) {
 			const [index, setIndex] = (0, react.useState)(/* @__PURE__ */ new Map());
 			const [stack, setStack] = (0, react.useState)([]);
 			const [brokenLink, setBrokenLink] = (0, react.useState)(null);
 			const seed = parseNotePath(path);
 			(0, react.useEffect)(() => {
 				let cancelled = false;
-				fetchPages().then(({ pages }) => {
+				fetchPages(root).then(({ pages }) => {
 					if (cancelled) return;
 					const m = /* @__PURE__ */ new Map();
 					for (const p of pages) m.set(p.id, {
@@ -7317,7 +7549,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				return () => {
 					cancelled = true;
 				};
-			}, []);
+			}, [root]);
 			(0, react.useEffect)(() => {
 				if (!seed) {
 					setStack([]);
@@ -7359,7 +7591,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				setStack((s) => s.length > 1 ? s.slice(0, -1) : s);
 			}, []);
 			const handleSaved = (0, react.useCallback)(() => {
-				fetchPages().then(({ pages }) => {
+				fetchPages(root).then(({ pages }) => {
 					const m = /* @__PURE__ */ new Map();
 					for (const p of pages) m.set(p.id, {
 						category: p.category,
@@ -7375,7 +7607,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					}));
 				}).catch(() => {});
 				onPagesChanged?.();
-			}, [onPagesChanged]);
+			}, [onPagesChanged, root]);
 			if (!current) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 				className: "knj-wiki",
 				style: { height: "100%" },
@@ -7408,7 +7640,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					note: current,
 					brokenLink,
 					onNavigate: navigate,
-					onSaved: handleSaved
+					onSaved: handleSaved,
+					root
 				})]
 			});
 		}
@@ -7487,6 +7720,14 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 .knj-wiki .knj-scroll { overflow-y: auto; overflow-x: hidden; }
 /* 空态撑满滚动内容区，配合 knj-empty 的 flex 居中实现垂直居中（对齐工作台空态行为） */
 .knj-wiki .knj-scroll > .knj-empty { height: 100%; }
+/* v12 图谱视图宿主（2026-10-25）：不滚动、列向 flex，子节点吃满剩余高度。
+   背景：图谱画布此前是「测得高度减 86 再写回自身」的反馈环 + 自动高度，侧栏再高画布也只有 320px，
+   下方一大片空白。现在画布高度完全由 flex 链决定（见 GraphView 嵌入态注释）。 */
+.knj-wiki .knj-graph-host { display: flex; flex-direction: column; overflow: hidden; }
+.knj-wiki .knj-graph-host > * { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+/* 兜底：svg 改成 height:100% 后，画布高度完全由父链决定；若宿主 pane body 没有确定高度，
+   百分比高度退化为 auto → 画布可能塌成 0。给嵌入态画布留 200px 最小高度（超短面板由宿主裁剪）。 */
+.knj-wiki .knj-graph-embed .knj-fscanvas { min-height: 200px; }
 .knj-wiki .knj-pad { padding: 12px; }
 .knj-wiki .knj-hrow { display: flex; align-items: center; gap: 8px; }
 .knj-wiki .knj-hairline { border-top: 1px solid var(--knj-border-soft); }
@@ -7676,7 +7917,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 .knj-wiki .knj-graph-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px 0; }
 .knj-wiki .knj-graph-stats { font-size: 12px; color: var(--knj-text-3); }
 .knj-wiki .knj-graph-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 12px 4px; }
-.knj-wiki .knj-graph-svg { display: block; width: 100%; height: auto; border-radius: var(--knj-radius-m); background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); }
+.knj-wiki .knj-graph-svg { display: block; width: 100%; height: 100%; border-radius: var(--knj-radius-m); background: var(--knj-bg-1); border: 1px solid var(--knj-border-soft); }
 .knj-wiki .knj-graph-label { fill: var(--knj-text-2); font-size: 11px; pointer-events: none; }
 
 /* ============ 图谱全屏（v10） ============ */
@@ -7769,6 +8010,12 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		* Built by tsdown into client/client.js.
 		*/
 		const name = "dsh-knj-obsidian";
+		/**
+		* 客户端构建标记：显示在知识库面板底部，用于**人眼确认**浏览器加载的是哪一次构建。
+		* 为什么需要它（2026-10-24）：面板报的仍是旧桥接的失败文案，但无法从现象区分
+		* 「浏览器还在跑旧 bundle」还是「新 bundle 里服务没取到」——两种解释指向完全不同的修法。
+		*/
+		const CLIENT_BUILD = "26.10.11";
 		/** 插件内使用的 tab 类型标识（id 与 kind 取同一个值，便于排查）。 */
 		const WIKI_TAB = "dsh-knj-obsidian:wiki";
 		/** 笔记工作台：由侧栏里点节点触发，靠 openTab 的 params 传 id|category。 */
@@ -7810,14 +8057,30 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				}
 				const workspaces = hostService(ctx, "workspaces");
 				const sessions = hostService(ctx, "sessions");
-				hostService(ctx, "conversation");
+				const conversation = hostService(ctx, "conversation");
+				/**
+				* uiWorkspace 由 ui-workspace 插件注册，可能**晚于本插件 apply** 才就绪。
+				* 2026-10-24 实测教训：apply 时捕获成常量会拿到 undefined 并永久保留，于是每次都
+				* 静默退到旧回退路径（面板仍报 prefill not verified）。必须在**调用时**再取。
+				*/
+				const uiWorkspaceFace = () => hostService(ctx, "uiWorkspace");
+				console.info("[knj-obsidian] client build", CLIENT_BUILD, {
+					sessions: sessions !== void 0,
+					workspaces: workspaces !== void 0,
+					conversation: conversation !== void 0,
+					uiWorkspaceAtApply: uiWorkspaceFace() !== void 0
+				});
 				/**
 				* v11：把受限指令交给 Agent —— **新建一个会话**并预填指令（可见可编辑，用户回车发送）。
 				* 返回 { ok:false, message } = 失败原因（UI 显示并退回复制）；ok:true 可带告警 message。
-				* 宿主契约（dsh-api-session-controller client ISessions）：
-				*   await sessions.create({ workspaceId, cwd }) → newId → sessions.open(newId)
-				*   → 轮询 sessions.scope(newId) → conversation.input.for(actx)
-				*   → input.state.getSnapshot()（物化输入态）→ input.setDraft(text) → 读回校验
+				*
+				* 宿主契约（2026-10-24 按 0.2.1-rc.2 实测校正，两条通道）：
+				*   1) **uiWorkspace.startSession(workspaceId, { prompt })** —— 0.2 正解：内部完成
+				*      「新建/复用会话 → 切为当前 → 初始化草稿」。ISessions 没有 open()，所以这条是唯一
+				*      能同时做到「切过去 + 预填」的公开通道。
+				*   2) 旧宿主回退：sessions.create({ workspaceId, cwd }) → uiWorkspace.openSession(newId)
+				*      （旧宿主才有 sessions.open）→ 轮询 sessions.scope(newId) → conversation.input.for(actx)
+				*      → input.state.getSnapshot()（物化输入态）→ input.setDraft(text) → 读回校验。
 				* 归属：先按库根从 workspaces 快照匹配 workspaceId 一并传入（只传 cwd 时宿主可能按“当前工作区”处理），
 				* 创建后再从会话列表读回 cwd 校验，不一致时如实告警而不是假装成功。
 				*/
@@ -7902,6 +8165,100 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						return;
 					}
 				};
+				/** 会话列表快照里的全部 id（宿主 SessionListState = ids/byId/phase/…；两种形态都吃）。 */
+				const readSessionIds = () => {
+					try {
+						const snap = sessions?.list.getSnapshot();
+						if (Array.isArray(snap?.ids)) return [...snap.ids];
+						return snap?.byId !== void 0 ? Object.keys(snap.byId) : [];
+					} catch {
+						return [];
+					}
+				};
+				const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+				/**
+				* 0.2 正解：交给宿主 ui-workspace 的 startSession（新建/复用 → 切为当前 → 初始化草稿）。
+				* 这里只做「调用 + 读回校验」：新会话 id、cwd 归属、draft 内容；校验不过就如实报错，
+				* 绝不把「宿主没反应」报告成成功（这一次的 bug 就是静默失败）。
+				*/
+				const startViaHostWorkspace = async (uiWorkspace, text, cwd) => {
+					const failHost = (reason) => {
+						console.warn("[knj] startAgentSession(uiWorkspace) failed:", reason);
+						return {
+							ok: false,
+							message: reason
+						};
+					};
+					if (!sessions) return failHost("host service \"sessions\" unavailable");
+					const workspace = await ensureWorkspaceId(cwd);
+					const idsBefore = new Set(readSessionIds());
+					try {
+						uiWorkspace.startSession(workspace?.id, { prompt: text });
+					} catch (e) {
+						return failHost(`uiWorkspace.startSession threw: ${String(e)}`);
+					}
+					const marker = text.slice(0, 12);
+					/** 可能成为目标的会话：新出现的 id，或同 cwd 的空白会话（宿主会复用 blank）。 */
+					const candidates = () => {
+						try {
+							const snap = sessions.list.getSnapshot();
+							return (Array.isArray(snap?.ids) ? snap.ids : Object.keys(snap?.byId ?? {})).filter((id) => {
+								if (!idsBefore.has(id)) return true;
+								const row = snap?.byId?.[id];
+								if (row?.blank !== true) return false;
+								return !cwd || normalizePath(row.cwd) === normalizePath(cwd);
+							});
+						} catch {
+							return [];
+						}
+					};
+					let newId;
+					let openedId;
+					let draftSeen = "";
+					const deadline = Date.now() + 8e3;
+					while (Date.now() < deadline) {
+						for (const id of candidates()) {
+							if (!idsBefore.has(id) && newId === void 0) newId = id;
+							try {
+								const actx = sessions.scope?.(id);
+								if (actx === void 0 || actx === null) continue;
+								const draft = conversation?.input?.for?.(actx)?.state?.getSnapshot?.()?.draft ?? "";
+								if (draft !== "") draftSeen = draft;
+								if (draft.includes(marker)) {
+									openedId = id;
+									break;
+								}
+							} catch {}
+						}
+						if (openedId !== void 0) break;
+						await sleep(150);
+					}
+					if (openedId === void 0 && newId === void 0) return failHost("8 秒内没有出现新会话：宿主可能拒绝了建会话（工作区未就绪，或这次导航被更晚的操作取代），指令请用「复制触发指令」");
+					const targetId = openedId ?? newId;
+					const actualCwd = readSessionCwd(targetId);
+					const mismatch = cwd && actualCwd && normalizePath(actualCwd) !== normalizePath(cwd) ? `新会话工作区可能不对：期望 ${cwd}，实际 ${actualCwd}` : "";
+					if (openedId === void 0) {
+						console.info("[knj] startAgentSession: host path created session, draft readback empty", {
+							sessionId: targetId,
+							draftSeen: draftSeen.slice(0, 40)
+						});
+						return {
+							ok: true,
+							message: [mismatch, "已新建会话，但没能读回预填内容（新会话输入框若为空，请用「复制触发指令」）"].filter(Boolean).join("；")
+						};
+					}
+					console.info("[knj] startAgentSession: host path verified", {
+						sessionId: openedId,
+						reusedBlank: idsBefore.has(openedId),
+						workspaceId: workspace?.id,
+						workspaceVia: workspace?.via,
+						cwd
+					});
+					return {
+						ok: true,
+						message: mismatch || void 0
+					};
+				};
 				const startAgentSession = async (text, cwd) => {
 					const fail = (reason) => {
 						console.warn("[knj] startAgentSession failed:", reason);
@@ -7912,6 +8269,15 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					};
 					try {
 						if (!text) return fail("empty instruction");
+						const uiWorkspace = uiWorkspaceFace();
+						console.info("[knj] startAgentSession services", {
+							uiWorkspace: uiWorkspace !== void 0,
+							startSession: typeof uiWorkspace?.startSession,
+							openSession: typeof uiWorkspace?.openSession,
+							sessions: sessions !== void 0,
+							conversation: conversation !== void 0
+						});
+						if (uiWorkspace?.startSession) return await startViaHostWorkspace(uiWorkspace, text, cwd);
 						if (!sessions) return fail("host service \"sessions\" unavailable");
 						if (typeof sessions.create !== "function") return fail("sessions.create unavailable (host too old)");
 						const workspace = await ensureWorkspaceId(cwd);
@@ -7925,7 +8291,12 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 							return fail(`sessions.create threw: ${String(e)}`);
 						}
 						if (!newId) return fail("sessions.create returned no id");
-						try {
+						if (uiWorkspace?.openSession) try {
+							uiWorkspace.openSession(newId);
+						} catch (e) {
+							return fail(`uiWorkspace.openSession threw: ${String(e)}`);
+						}
+						else try {
 							sessions.open?.(newId);
 						} catch (e) {
 							return fail(`sessions.open threw: ${String(e)}`);
@@ -8095,20 +8466,65 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					title: () => "笔记"
 				});
 				if (typeof disposeNoteType === "function") disposers.push(disposeNoteType);
+				const workspaceItems = () => {
+					try {
+						return workspaces?.list?.getSnapshot?.()?.items ?? [];
+					} catch {
+						return [];
+					}
+				};
+				const rootOfSeat = (seat, cwd) => resolveSessionRoot({
+					sessionId: seat.sessionId,
+					cwd,
+					workspaces: workspaceItems()
+				});
+				/** 带会话绑定的知识库面板（只在宿主提供 useSessions 时渲染）。 */
+				const SeatBoundWikiBody = (seat) => {
+					const cwd = seat.useSessions((s) => seat.sessionId ? s?.byId?.[seat.sessionId]?.cwd : void 0);
+					return (0, react.createElement)(WikiSidebar, {
+						openNote,
+						workspaces,
+						sessions,
+						startAgentSession,
+						sessionId: seat.sessionId,
+						sessionCwd: cwd,
+						build: CLIENT_BUILD
+					});
+				};
+				/** 带会话绑定的笔记页（同一 root 解析，否则笔记页签会读到全局当前库）。 */
+				const SeatBoundNoteBody = (seat) => {
+					const cwd = seat.useSessions((s) => seat.sessionId ? s?.byId?.[seat.sessionId]?.cwd : void 0);
+					const params = readParams(seat);
+					const path = typeof params?.path === "string" ? params.path : void 0;
+					return (0, react.createElement)(NoteWorkbench, {
+						path,
+						root: rootOfSeat(seat, cwd),
+						onPagesChanged: () => {}
+					});
+				};
 				const disposeWikiBody = slots.inject("sidebar.right.pane.tab", () => slots.register({
 					name: "sidebar.right.pane.tab",
 					key: WIKI_TAB
-				}, () => (0, react.createElement)(WikiSidebar, {
-					openNote,
-					workspaces,
-					sessions,
-					startAgentSession
-				})));
+				}, (props) => {
+					const seat = props;
+					if (seat && typeof seat.useSessions === "function") return (0, react.createElement)(SeatBoundWikiBody, seat);
+					return (0, react.createElement)(WikiSidebar, {
+						openNote,
+						workspaces,
+						sessions,
+						startAgentSession,
+						build: CLIENT_BUILD
+					});
+				}));
 				if (typeof disposeWikiBody === "function") disposers.push(disposeWikiBody);
 				const disposeNoteBody = slots.inject("sidebar.right.pane.tab", () => slots.register({
 					name: "sidebar.right.pane.tab",
 					key: NOTE_TAB
-				}, NoteBody));
+				}, (props) => {
+					const seat = props;
+					if (seat && typeof seat.useSessions === "function") return (0, react.createElement)(SeatBoundNoteBody, seat);
+					return NoteBody(props ?? {});
+				}));
 				if (typeof disposeNoteBody === "function") disposers.push(disposeNoteBody);
 				const disposeNoteTitle = slots.inject("sidebar.right.pane.tab.title", () => slots.register({
 					name: "sidebar.right.pane.tab.title",

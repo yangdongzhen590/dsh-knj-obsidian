@@ -45,6 +45,41 @@
       "pages_produced": [
         "capability-边栏-ui"
       ]
+    },
+    "capability-mining:知识检索": {
+      "content_hash": "sha256:0897b080a897140ba78c2dc0dac5f5f895caab4810d8e7b8d728b967e1e872d1",
+      "last_ingested": "2026-10-24T13:32:00.941Z",
+      "pages_produced": [
+        "capability-知识检索"
+      ]
+    },
+    "capability-mining:知识写入": {
+      "content_hash": "sha256:41f18226e50146573897f4cab0afacffb5e3f3b80dd37c54aca5c46c12116e8e",
+      "last_ingested": "2026-10-24T13:36:31.715Z",
+      "pages_produced": [
+        "capability-知识写入"
+      ]
+    },
+    "capability-mining:知识治理": {
+      "content_hash": "sha256:ca925862140a329161c445201ac862ecf25e809182cf1cb6f46e4d137a829a7d",
+      "last_ingested": "2026-10-24T13:42:22.777Z",
+      "pages_produced": [
+        "capability-知识治理"
+      ]
+    },
+    "capability-mining:主动触发": {
+      "content_hash": "sha256:926c67190de53cbc0d0bee6b97534504a43f3f130727df5055d801ba2d4eccf4",
+      "last_ingested": "2026-10-24T13:47:02.788Z",
+      "pages_produced": [
+        "capability-主动触发层"
+      ]
+    },
+    "capability-mining:边栏 UI": {
+      "content_hash": "sha256:0e298547a790489792a11e6f90be9c32743c2b5e5d243d1f87c9c0fcc093b933",
+      "last_ingested": "2026-10-24T13:53:40.159Z",
+      "pages_produced": [
+        "capability-边栏-ui"
+      ]
     }
   }
 }

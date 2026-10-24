@@ -68,6 +68,17 @@ test('产物级护栏：client/client.js 不得残留 registerTab / betterSideba
   assertNoLegacyClientApi(readFileSync(client, 'utf8'), 'client/client.js')
 })
 
+/**
+ * 0.2.1-rc.2 的 ISessions 没有 open()；会话切换与「新建会话+预填」归 ui-workspace 的
+ * UiWorkspace.startSession/openSession。产物里缺这两个符号 = 用户点了「新建会话并预填」
+ * 只会静默建出一个空会话、界面不切、预填失败（2026-10-24 实测，20:04/20:08 各一个空会话）。
+ */
+test('产物级：client/client.js 必须携带 uiWorkspace 会话通道', () => {
+  const text = readFileSync(join(ROOT, 'client/client.js'), 'utf8')
+  assert.match(text, /uiWorkspace/, '产物应含 uiWorkspace（只改源码不重建 = 线上照旧坏）')
+  assert.match(text, /startSession/, '产物应含宿主 startSession（新建会话+预填草稿）')
+})
+
 test('护栏自检：含旧符号的伪造产物必须被判红（防止护栏本身假绿）', () => {
   // 这两条是"护栏能拦住 2026.10.211"的最小复现：同样的断言喂旧产物必须抛。
   assert.throws(() => assertNoLegacyClientApi('function registerTab(id, def) {}', 'fake'), /registerTab/)

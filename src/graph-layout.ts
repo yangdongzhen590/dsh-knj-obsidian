@@ -11,7 +11,8 @@
 //
 // 三步（只动坐标与标签文案；圆半径 r=8、字号 11px 全程不变 → 无变形）：
 //   ① placeLabels  —— 按两侧空余选边；放不下则按该侧**可用宽度**截断（不是全局上限）
-//   ② spreadToFill  —— 布局结束后把节点坐标按轴铺进可用区（限幅 [MIN_SPREAD, MAX_SPREAD]）
+//   ② spreadToFill  —— 布局结束后把节点坐标按轴铺进可用区（限幅 [MIN_SPREAD, MAX_SPREAD]；
+//                      v12 起纵向用更宽的 MAX_SPREAD_Y，见下方常量注释）
 //   ③ viewBox 保持面板尺寸（不做等比缩放，否则字号会被缩小）
 //
 // 为什么不「等比适配」：错配的是**宽高比**而非比例——实测等比适配只能让全屏 68%→71%，
@@ -23,8 +24,21 @@ export const GRAPH_PAD = 16
 export const NODE_R = 8
 /** 标签与圆心之间的水平间距。 */
 export const LABEL_GAP = 12
-/** 铺开限幅：与现状相比最多铺开/收拢到这个倍数，避免极端面板把图拉散或压扁。 */
+/** 铺开限幅：横向与纵向分开——横向还要给左右两侧标签留位，纵向只受「别把图拉成一柱香」约束。 */
 export const MAX_SPREAD = 1.8
+/**
+ * 纵向铺开上限（v12，2026-10-25）：
+ * 画布改成吃满侧栏高度后（侧栏 336×~900），纵轴可用空间通常远超力导向云团；
+ * 沿用横向的 1.8 会把点锁在中间一条带里，高度仍有一半空白。纵向不承担标签宽度，
+ * 因此对「高画布」（height > width，即侧栏面板）单独放宽。
+ * 宽画布（全屏）仍按 MAX_SPREAD 收口——全屏下横向空白才是主要问题，纵向放宽只会把
+ * 分类聚簇上下扯开，属本次范围外的视觉变更。
+ */
+export const MAX_SPREAD_Y = 3
+/** 纵向限幅：只有高画布（侧栏）吃这份放宽，宽画布（全屏）保持与横向同一上限。 */
+function verticalSpreadCap(width: number, height: number): number {
+  return height > width ? MAX_SPREAD_Y : MAX_SPREAD
+}
 export const MIN_SPREAD = 0.6
 /** 少于这个宽度就不再画标签（仅为保证「绝不越界」这条不变量）。 */
 const MIN_LABEL_ROOM = 16
@@ -119,7 +133,7 @@ export function spreadToFill<T extends PlacedNode>(
   const availH = height - GRAPH_PAD * 2 - NODE_R * 2
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2
   const kx = spanX > 1 ? Math.max(MIN_SPREAD, Math.min(MAX_SPREAD, availW / spanX)) : 1
-  const ky = spanY > 1 ? Math.max(MIN_SPREAD, Math.min(MAX_SPREAD, availH / spanY)) : 1
+  const ky = spanY > 1 ? Math.max(MIN_SPREAD, Math.min(verticalSpreadCap(width, height), availH / spanY)) : 1
   for (const n of nodes) {
     n.x = cx + (n.x - cx) * kx
     n.y = cy + (n.y - cy) * ky

@@ -35,27 +35,42 @@ export interface LintReport {
 
 const BASE = '/api/obsidian-wiki'
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path)
-  if (!res.ok) throw new Error(`wiki api ${path}: ${res.status}`)
+/**
+ * 会话级作用域：每个请求都带 `root=<工作区根>`。
+ *
+ * 为什么不是「服务端全局当前库」：面板是按会话渲染的，多个会话可能同时挂在不同的
+ * 工作区。全局单值会被最后 activate 的那一个劫持，表现为「切换工作区后仍是旧库」
+ * （见 .wiki/concepts/会话级知识库绑定）。带 root 后每个面板只读自己工作区的库。
+ * 不带 root 的调用保持旧行为（全局当前库），供没有会话上下文的地方使用。
+ */
+function withRoot(path: string, root?: string): string {
+  const r = (root ?? '').trim()
+  if (!r) return path
+  return `${path}${path.includes('?') ? '&' : '?'}root=${encodeURIComponent(r)}`
+}
+
+async function getJson<T>(path: string, root?: string): Promise<T> {
+  const url = withRoot(path, root)
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`wiki api ${url}: ${res.status}`)
   return res.json() as Promise<T>
 }
 
-export function fetchPages(): Promise<{ pages: PageSummary[]; total: number }> {
-  return getJson(`${BASE}/pages`)
+export function fetchPages(root?: string): Promise<{ pages: PageSummary[]; total: number }> {
+  return getJson(`${BASE}/pages`, root)
 }
 
 /** v5：磁盘原文（含 frontmatter），源码视图/编辑用。 */
-export async function fetchRawPage(id: string, category: string): Promise<string> {
-  const res = await fetch(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}&raw=1`)
+export async function fetchRawPage(id: string, category: string, root?: string): Promise<string> {
+  const res = await fetch(withRoot(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}&raw=1`, root))
   const data = await res.json() as { raw?: string; error?: string }
   if (!res.ok || data.error) throw new Error(data.error ?? `wiki api: ${res.status}`)
   return data.raw ?? ''
 }
 
 /** v5：全文保存（同源 JSON POST）。成功返回解析后的页面。 */
-export async function saveRawPage(id: string, category: string, raw: string): Promise<WikiPage> {
-  const res = await fetch(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`, {
+export async function saveRawPage(id: string, category: string, raw: string, root?: string): Promise<WikiPage> {
+  const res = await fetch(withRoot(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`, root), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ raw }),
@@ -65,17 +80,22 @@ export async function saveRawPage(id: string, category: string, raw: string): Pr
   return data.page as WikiPage
 }
 
-export function fetchSearch(q: string, mode: 'auto' | 'index-only' = 'auto'): Promise<{ candidates: SearchCandidate[]; strategy: string }> {
-  return getJson(`${BASE}/search?q=${encodeURIComponent(q)}&mode=${mode}`)
+export function fetchSearch(q: string, mode: 'auto' | 'index-only' = 'auto', root?: string): Promise<{ candidates: SearchCandidate[]; strategy: string }> {
+  return getJson(`${BASE}/search?q=${encodeURIComponent(q)}&mode=${mode}`, root)
 }
 
-export function fetchLint(): Promise<LintReport> {
-  return getJson(`${BASE}/lint`)
+export function fetchLint(root?: string): Promise<LintReport> {
+  return getJson(`${BASE}/lint`, root)
+}
+
+/** 图谱数据（节点/边/孤儿），按 root 取库。 */
+export function fetchGraph<T = unknown>(root?: string): Promise<T> {
+  return getJson<T>(`${BASE}/graph`, root)
 }
 
 /** v6：重建 index.md（同源 POST）。 */
-export async function rebuildIndex(): Promise<{ pageCount: number }> {
-  const res = await fetch(`${BASE}/rebuild-index`, {
+export async function rebuildIndex(root?: string): Promise<{ pageCount: number }> {
+  const res = await fetch(withRoot(`${BASE}/rebuild-index`, root), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: '{}',
@@ -96,8 +116,8 @@ export interface ImportResult {
 }
 
 /** v6：路径导入 md（同源 POST）。 */
-export async function importMd(path: string, category: string): Promise<ImportResult> {
-  const res = await fetch(`${BASE}/import`, {
+export async function importMd(path: string, category: string, root?: string): Promise<ImportResult> {
+  const res = await fetch(withRoot(`${BASE}/import`, root), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ path, category }),
@@ -114,6 +134,8 @@ export interface VaultInfo {
   name: string
   root: string
   source: 'cwd' | 'workspace' | 'attached'
+  /** 该库当前页数（跟随时由服务端按 root 解析后补上） */
+  pageCount?: number
 }
 
 export interface VaultListEntry extends VaultInfo {
@@ -125,10 +147,14 @@ export interface VaultListEntry extends VaultInfo {
 export interface VaultsResponse {
   current: VaultInfo | null
   vaults: VaultListEntry[]
+  /** 本次请求带 root 时回填：服务端实际解析到的工作区根（未初始化时等于请求的 root） */
+  followedRoot?: string
+  /** 本次请求带 root 且该工作区没有 .wiki：面板显示「本工作区没有知识库」而不是旧库 */
+  uninitialized?: boolean
 }
 
-export function fetchVaults(): Promise<VaultsResponse> {
-  return getJson(`${BASE}/vaults`)
+export function fetchVaults(root?: string): Promise<VaultsResponse> {
+  return getJson(`${BASE}/vaults`, root)
 }
 
 async function postVault(action: string, payload: Record<string, unknown>): Promise<VaultsResponse> {
@@ -142,7 +168,7 @@ async function postVault(action: string, payload: Record<string, unknown>): Prom
   return data as VaultsResponse
 }
 
-/** 按目录激活（跟工作区走）：已注册仅切换，未注册自动挂接。 */
+/** 按目录激活（旧全局语义；面板已改为按会话 root 取库，保留给显式全局切换场景）。 */
 export const activateVault = (root: string): Promise<VaultsResponse> => postVault('activate', { root })
 
 export const switchVault = (id: string): Promise<VaultsResponse> => postVault('switch', { id })
@@ -154,16 +180,16 @@ export const removeVault = (id: string): Promise<VaultsResponse> => postVault('r
 // ---------- 还原点（checkpoint） ----------
 export interface CheckpointMeta { id: string; createdAt: string; pageCount: number }
 
-export async function fetchCheckpoints(): Promise<CheckpointMeta[]> {
-  const data = await getJson<{ checkpoints: CheckpointMeta[] }>(`${BASE}/checkpoints`)
+export async function fetchCheckpoints(root?: string): Promise<CheckpointMeta[]> {
+  const data = await getJson<{ checkpoints: CheckpointMeta[] }>(`${BASE}/checkpoints`, root)
   return data.checkpoints
 }
 
 /** 从还原点回滚（同源 JSON POST）。
  *  mode 默认 `merge`（非破坏性：只撤销快照内页面的修改，保留快照后新增页）；
  *  `exact` = 整库回到快照（会删除快照后新增页），需显式传入。 */
-export async function restoreCheckpoint(id: string, mode: 'merge' | 'exact' = 'merge'): Promise<{ pageCount: number; restored: number; keptNewer: number; mode: string }> {
-  const res = await fetch(`${BASE}/checkpoint/restore`, {
+export async function restoreCheckpoint(id: string, mode: 'merge' | 'exact' = 'merge', root?: string): Promise<{ pageCount: number; restored: number; keptNewer: number; mode: string }> {
+  const res = await fetch(withRoot(`${BASE}/checkpoint/restore`, root), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id, mode }),
@@ -174,8 +200,8 @@ export async function restoreCheckpoint(id: string, mode: 'merge' | 'exact' = 'm
 }
 
 /** 取单个知识页（非 raw）。 */
-export async function fetchPage(id: string, category: string): Promise<WikiPage> {
-  const res = await fetch(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`)
+export async function fetchPage(id: string, category: string, root?: string): Promise<WikiPage> {
+  const res = await fetch(withRoot(`${BASE}/page?id=${encodeURIComponent(id)}&category=${encodeURIComponent(category)}`, root))
   const data = await res.json() as { page?: WikiPage; error?: string }
   if (!res.ok || data.error || !data.page) throw new Error(data.error ?? `page api: ${res.status}`)
   return data.page
@@ -208,13 +234,13 @@ export interface SemanticStatus {
   note?: string
 }
 
-export function fetchSemanticStatus(): Promise<SemanticStatus> {
-  return getJson(`${BASE}/semantic-status`)
+export function fetchSemanticStatus(root?: string): Promise<SemanticStatus> {
+  return getJson(`${BASE}/semantic-status`, root)
 }
 
 /** 触发后台重建索引（立刻返回；进度靠 fetchSemanticStatus 轮询）。 */
-export async function triggerSemanticUpdate(): Promise<{ started: boolean; running: boolean; status: SemanticStatus }> {
-  const res = await fetch(`${BASE}/semantic-update`, {
+export async function triggerSemanticUpdate(root?: string): Promise<{ started: boolean; running: boolean; status: SemanticStatus }> {
+  const res = await fetch(withRoot(`${BASE}/semantic-update`, root), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: '{}',

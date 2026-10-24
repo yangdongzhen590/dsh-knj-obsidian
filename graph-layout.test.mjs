@@ -14,7 +14,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   labelWidth, placeLabels, spreadToFill, labelBounds,
-  GRAPH_PAD, NODE_R, LABEL_GAP, MAX_SPREAD,
+  GRAPH_PAD, NODE_R, LABEL_GAP, MAX_SPREAD, MAX_SPREAD_Y,
 } from './lib/graph-layout.js'
 
 const node = (title, x, y) => ({ id: title.slice(0, 6), title, category: 'concepts', x, y })
@@ -87,6 +87,28 @@ test('spreadToFill：铺开后节点仍留在面板内（含半径留边）', ()
     assert.ok(n.x >= GRAPH_PAD && n.x <= 400 - GRAPH_PAD, `x 越界 ${n.x}`)
     assert.ok(n.y >= GRAPH_PAD && n.y <= 300 - GRAPH_PAD, `y 越界 ${n.y}`)
   }
+})
+
+test('v12 纵向铺开上限按轴放开：高画布上 ky 可超过横向 MAX_SPREAD', () => {
+  // 背景：画布改成吃满侧栏高度后（侧栏 336×~900），纵轴空间远超力导向云团，
+  // 单一 1.8× 上限会把点锁在中间一条带里 → 高度仍有一半空白。
+  assert.ok(MAX_SPREAD_Y > MAX_SPREAD, `纵向上限应高于横向：${MAX_SPREAD_Y} vs ${MAX_SPREAD}`)
+  const nodes = [node('a', 200, 400), node('b', 200, 500)]
+  const r = spreadToFill(nodes, 336, 900)
+  assert.ok(r.ky > MAX_SPREAD, `高画布应允许纵向铺开超过横向上限：ky=${r.ky}`)
+  assert.ok(r.ky <= MAX_SPREAD_Y, `纵向限幅：ky=${r.ky} ≤ ${MAX_SPREAD_Y}`)
+  assert.ok(r.kx <= MAX_SPREAD, `横向仍受 ${MAX_SPREAD} 限幅：kx=${r.kx}`)
+  for (const n of nodes) {
+    assert.ok(n.y >= GRAPH_PAD && n.y <= 900 - GRAPH_PAD, `铺开后 y 越界 ${n.y}`)
+  }
+})
+
+test('v12 宽画布（全屏）不放宽纵向：仍按 MAX_SPREAD 收口，避免把分类聚簇上下扯开', () => {
+  // 全屏 1180×560 是「宽画布」：纵向可用 512，云团只跨 100 → 若不设限会拉到 5.1×。
+  const nodes = [node('a', 300, 300), node('b', 300, 400)]
+  const r = spreadToFill(nodes, 1180, 560)
+  assert.ok(r.ky <= MAX_SPREAD + 1e-9, `宽画布纵向不该超过 ${MAX_SPREAD}：ky=${r.ky}`)
+  assert.ok(r.ky > 1, '仍有空白时应向上收（ky>1）')
 })
 
 test('spreadToFill：单节点/零跨度不产生 NaN、不抛错', () => {

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { fetchSearch, type SearchCandidate } from './api.ts'
 import { IconClose, IconSearch, IconRefresh } from './icons.tsx'
 
-export function SearchBox({ onResult }: { onResult: (c: SearchCandidate[]) => void }) {
+export function SearchBox({ onResult, root }: { onResult: (c: SearchCandidate[]) => void; root?: string }) {
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   // v7：搜索失败与「无匹配」区分开（R-06），不再折叠成空结果
@@ -13,11 +13,13 @@ export function SearchBox({ onResult }: { onResult: (c: SearchCandidate[]) => vo
     setBusy(true)
     setErr(null)
     try {
-      const r = await fetchSearch(q)
+      // root：搜索钉在本会话工作区的库上（不带 root 时服务端退回全局当前库）
+      const r = await fetchSearch(q, 'auto', root)
       onResult(r.candidates)
-    } catch {
-      // 失败：提示错误，不切到「无匹配」结果视图
-      setErr('搜索失败，请重试')
+    } catch (e) {
+      // 失败：提示错误，不切到「无匹配」结果视图；409 = 本工作区没有知识库
+      const message = String(e)
+      setErr(message.includes(': 409') ? '本工作区还没有知识库：点上方「初始化知识库」' : '搜索失败，请重试')
     } finally {
       setBusy(false)
     }

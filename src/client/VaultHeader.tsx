@@ -1,35 +1,43 @@
 /**
- * v7 vault 头部（设计 v2）：当前库身份（名称+路径）、切换下拉、新建/挂接/移除。
- * - 挂载时按当前工作区激活库（跟随工作区走；无 workspaces 服务时降级为手动切换）
- * - 切换/变更后回调 onVaultChanged，由上层刷新树/lint/图谱
- * 样式全部走宿主令牌（styles.ts），随宿主浅/深主题自适应。
+ * v7 vault 头部（2026-10-24 改为**会话级作用域**）。
+ *
+ * 旧实现按 `workspaces.list.getSnapshot().recentWorkspaceId` +
+ * `sessions.list.getSnapshot().current` 轮询调度 activate。DSH 0.2 的两个快照里
+ * 都没有这两个字段（SessionListState = ids/byId/phase/projectionsBySession；
+ * WorkspaceState = items/archivedSessionIds/pinnedSessionIds/state/phase/error），
+ * 于是跟随目标恒为 undefined，面板停在旧库——「切换工作区后仍是旧库」。
+ *
+ * 新契约：root（= 当前会话所属工作区根，由 WikiSidebar 用 session-root.ts 算出）
+ * 作为唯一输入；库身份/页数/未初始化态全部由 `/vaults?root=` 回填，不再写全局
+ * currentVaultId，因此多个会话的面板互不干扰。下拉「切换知识库」= 本面板的临时
+ * 覆盖（view-only），「跟随工作区」可一键还原。
  */
-import { useEffect, useRef, useState } from 'react'
-import { activateVault, attachVault, fetchVaults, removeVault, switchVault } from './api.ts'
+import { useEffect, useState } from 'react'
+import { attachVault, fetchVaults, removeVault } from './api.ts'
 import type { VaultInfo, VaultListEntry } from './api.ts'
+import { normalizeRoot } from './session-root.ts'
 import { IconBook, IconChevronDown, IconGear, IconPlus, IconRefresh, IconTrash } from './icons.tsx'
 
 /** 客户端工作区服务的最小结构面（宿主 dsh-client-runtime 提供；缺失时仅手动切换）。 */
 export interface WorkspaceFace {
   list: {
-    getSnapshot(): { items: readonly WorkspaceView[]; recentWorkspaceId?: string; baselinesReady?: boolean; state?: string; phase?: string }
+    getSnapshot(): { items: readonly WorkspaceView[] }
     subscribe(cb: () => void): () => void
   }
   pickDirectory?(): Promise<string | null>
-  /** 注册已存在的路径为工作区（幂等：已注册则解析回同一工作区）；v12 用于把库根落成工作区。 */
+  /** 注册已存在的路径为工作区（幂等：已注册则解析回同一工作区）。 */
   create?(input: { path: string }): Promise<{ id: string; title?: string; path?: string }>
 }
 
-/** 客户端会话服务的最小结构面（宿主 dsh-client-runtime 提供）：读「当前选中会话」及其 cwd。 */
+/** 会话服务最小面（保留导出：0.2 之前/其它调用方仍按此结构传参）。 */
 export interface SessionFace {
   list: {
-    getSnapshot(): { current?: string; byId?: Record<string, { cwd?: string }> }
+    getSnapshot(): { byId?: Record<string, { cwd?: string }> }
     subscribe(cb: () => void): () => void
   }
 }
 
 interface WorkspaceView {
-  /** 宿主 dsh-api-workspace-controller 的 WorkspaceView 字段名是 workspaceId（历史/旧版可能是 id）。 */
   workspaceId?: string
   id?: string
   title?: string
@@ -37,29 +45,34 @@ interface WorkspaceView {
   sessionIds?: readonly string[]
 }
 
-/** 取工作区 id：兼容 workspaceId（现行契约）与 id（旧版/窄化面）。 */
-function workspaceIdOf(w: WorkspaceView | undefined): string | undefined {
-  return w?.workspaceId ?? w?.id
-}
-
 const SOURCE_LABEL: Record<string, string> = { cwd: '默认', workspace: '工作区', attached: '挂接' }
 
-export function VaultHeader({ workspaces, sessions, startAgentSession, onVaultChanged }: {
+/** 路径尾段（展示用；不引入 node:path，客户端无该模块）。 */
+function shortDir(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? path
+}
+
+export function VaultHeader({ root, workspaces, startAgentSession, onVaultChanged }: {
+  /** 当前会话所属工作区根（undefined = 宿主没给会话上下文，退回全局当前库）。 */
+  root?: string
   workspaces?: WorkspaceFace
-  sessions?: SessionFace
   /** v11：新建会话并预填指令（ok=false 时 message 为失败原因）；用于「初始化知识库」触发 agent。 */
   startAgentSession?: (instruction: string, cwd?: string) => Promise<{ ok: boolean; message?: string }>
   onVaultChanged: () => void
 }) {
   const [current, setCurrent] = useState<VaultInfo | null>(null)
   const [vaults, setVaults] = useState<VaultListEntry[]>([])
+  const [uninitialized, setUninitialized] = useState(false)
   const [notice, setNotice] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null)
   const [manageOpen, setManageOpen] = useState(false)
   const [formPath, setFormPath] = useState('')
   const [formName, setFormName] = useState('')
   const [busy, setBusy] = useState(false)
-  // 已激活过的工作区目录（避免重复激活打转）
-  const activatedRootRef = useRef<string | null>(null)
+  /** 本面板的临时库覆盖（下拉切换）；不写全局 currentVaultId。 */
+  const [overrideRoot, setOverrideRoot] = useState<string | undefined>(undefined)
+
+  const effectiveRoot = overrideRoot ?? root
 
   const flash = (text: string, kind: 'ok' | 'err' = 'ok') => {
     setNotice({ text, kind })
@@ -68,88 +81,47 @@ export function VaultHeader({ workspaces, sessions, startAgentSession, onVaultCh
 
   const load = async () => {
     try {
-      const r = await fetchVaults()
+      const r = await fetchVaults(effectiveRoot)
       setCurrent(r.current)
       setVaults(r.vaults)
+      setUninitialized(Boolean(r.uninitialized))
     } catch (e) {
       flash(`库列表加载失败：${e instanceof Error ? e.message : String(e)}`, 'err')
     }
   }
 
-  // 初始加载 + 跟随「当前会话」所属工作区（会话归属 → 会话 cwd → recent 兜底）
+  // 会话切换（root 变化）→ 丢弃面板级覆盖，重新按新工作区取库
   useEffect(() => {
-    load()
-    if (!workspaces) return
-    let disposed = false
-    // 轮询读快照（绕过 subscribe 是否触发的变量），每 2s 重估一次跟随目标
-    const step = () => {
-      try {
-        const wsSnap = workspaces.list.getSnapshot()
-        let ssSnap: { current?: string; byId?: Record<string, { cwd?: string }>; phase?: string; state?: string } | undefined
-        try { ssSnap = sessions?.list.getSnapshot() } catch { ssSnap = undefined }
-        if (disposed) return
-        // 门禁放宽：ws 基线 ready 即跟随（不等 sessions.phase=ready——新版其语义/时序存疑）
-        const wsUsable = wsSnap.baselinesReady || wsSnap.phase === 'ready'
-        if (!wsUsable) return
-        // 跟随目标 = 当前选中会话所属的工作区目录（不用 recent：它按会话更新时间投影，可能与浏览中的会话不一致）
-        let targetRoot: string | undefined
-        const currentId = ssSnap?.current
-        if (currentId) {
-          const owning = (wsSnap.items ?? []).find((w) => w.sessionIds?.includes(currentId))
-          if (owning?.path) {
-            targetRoot = owning.path
-          } else {
-            const cwd = ssSnap?.byId?.[currentId]?.cwd
-            if (cwd) targetRoot = cwd
-          }
-        }
-        targetRoot ??= ((wsSnap.items ?? []).find((w) => workspaceIdOf(w) === wsSnap.recentWorkspaceId) ?? wsSnap.items?.[0])?.path
-        if (!targetRoot || disposed || activatedRootRef.current === targetRoot) return
-        activatedRootRef.current = targetRoot
-        activateVault(targetRoot)
-          .then((r) => {
-            if (disposed) return
-            setCurrent(r.current)
-            setVaults(r.vaults)
-            onVaultChanged()
-          })
-          .catch(() => { /* 服务端不可用：保持当前库 */ })
-      } catch (e) {
-        console.warn('[knj] vault follow step failed:', String(e))
-      }
-    }
-    step()
-    const timer = setInterval(step, 2000)
-    const unsubWs = workspaces.list.subscribe(step)
-    const unsubSs = sessions?.list.subscribe(step)
-    return () => { disposed = true; clearInterval(timer); unsubWs(); unsubSs?.() }
-  }, [workspaces, sessions])
+    setOverrideRoot(undefined)
+  }, [root])
 
-  const handleSwitch = async (id: string) => {
+  // 跟随目标变化（root / 本面板覆盖）→ 重新解析库身份
+  useEffect(() => {
+    setCurrent(null)
+    setUninitialized(false)
+    load().catch(() => { /* load 内部已 flash */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveRoot])
+
+  const handleSwitch = (id: string) => {
     if (!id || id === current?.id) return
-    setBusy(true)
-    try {
-      const r = await switchVault(id)
-      setCurrent(r.current)
-      setVaults(r.vaults)
-      onVaultChanged()
-    } catch (e) {
-      flash(`切换失败：${e instanceof Error ? e.message : String(e)}`, 'err')
-    } finally { setBusy(false) }
+    const target = vaults.find((v) => v.id === id)
+    if (!target) return
+    setOverrideRoot(target.root)
+    onVaultChanged()
   }
 
   const doAttach = async () => {
-    const root = formPath.trim()
-    if (!root) { flash('请填写库目录（绝对路径）', 'err'); return }
+    const path = formPath.trim()
+    if (!path) { flash('请填写库目录（绝对路径）', 'err'); return }
     setBusy(true)
     try {
-      const r = await attachVault(root, formName.trim() || undefined)
-      setCurrent(r.current)
-      setVaults(r.vaults)
+      const r = await attachVault(path, formName.trim() || undefined)
       setManageOpen(false)
       setFormPath('')
       setFormName('')
-      flash(`已挂接/新建：${r.current?.name ?? root}`)
+      flash(`已挂接/新建：${r.current?.name ?? path}`)
+      setOverrideRoot(path)
       onVaultChanged()
     } catch (e) {
       flash(`挂接失败：${e instanceof Error ? e.message : String(e)}`, 'err')
@@ -164,8 +136,9 @@ export function VaultHeader({ workspaces, sessions, startAgentSession, onVaultCh
   ].join('')
   const doInit = async () => {
     const text = initInstruction()
+    const targetRoot = current?.root ?? effectiveRoot
     const res = startAgentSession
-      ? await startAgentSession(text, current?.root)
+      ? await startAgentSession(text, targetRoot)
       : { ok: false, message: '宿主未提供新建会话能力' }
     if (!res.ok) {
       try { await navigator.clipboard.writeText(text) } catch { /* 提示里给出降级说明 */ }
@@ -183,34 +156,50 @@ export function VaultHeader({ workspaces, sessions, startAgentSession, onVaultCh
     if (!window.confirm(`从列表中移除知识库「${current.name}」？\n不会删除磁盘上的任何文件。`)) return
     setBusy(true)
     try {
-      const r = await removeVault(current.id)
-      setCurrent(r.current)
-      setVaults(r.vaults)
+      await removeVault(current.id)
       flash(`已移除「${current.name}」`)
+      setOverrideRoot(undefined)
       onVaultChanged()
     } catch (e) {
       flash(`移除失败：${e instanceof Error ? e.message : String(e)}`, 'err')
     } finally { setBusy(false) }
   }
 
+  const followedByWorkspace = Boolean(overrideRoot && root && normalizeRoot(overrideRoot) !== normalizeRoot(root))
+  // 下拉 value 必须能匹配到某个 option；否则浏览器回落到**第一个库**（实测显示成 iobs_pro）。
+  // 未注册 / 未初始化 / 尚未加载时统一落到「本工作区」占位 option。
+  const currentInList = Boolean(current?.id) && vaults.some((v) => v.id === current!.id)
+  const selectValue = currentInList ? current!.id : '__follow__'
+  const displayRoot = current?.root ?? effectiveRoot
+  const followLabel = current?.name ?? (effectiveRoot ? shortDir(effectiveRoot) : '当前工作区')
+
   return <div className="knj-vault">
     <div className="knj-vault__identity">
-      <span className="knj-vault__name" title={current?.name}>
+      <span className="knj-vault__name" title={current?.name ?? displayRoot}>
         <IconBook size={15} />
-        <span className="knj-vault__name-text">{current ? current.name : '知识库'}</span>
+        <span className="knj-vault__name-text">
+          {current ? current.name : (effectiveRoot ? '本工作区没有知识库' : '知识库')}
+        </span>
       </span>
-      {current && (
-        <span className="knj-vault__path" title={current.root}>{current.root}</span>
+      {displayRoot && (
+        <span className="knj-vault__path" title={displayRoot}>{displayRoot}</span>
       )}
       <span className="knj-statusbar__spacer" />
-      {current && !(vaults.find((v) => v.id === current.id)?.initialized ?? true) && (
+      {effectiveRoot && uninitialized && (
         <button type='button' className="knj-btn knj-btn--sm knj-btn--primary" disabled={busy}
-          title={`此工作区还没有 .wiki，点此把初始化交给当前对话 Agent（wiki_init）`} onClick={doInit}>
+          title={'此工作区还没有 .wiki，点此把初始化交给当前对话 Agent（wiki_init）'} onClick={doInit}>
           初始化知识库
         </button>
       )}
-      {current && !(vaults.find((v) => v.id === current.id)?.initialized ?? true) && (
+      {effectiveRoot && uninitialized && (
         <span className="knj-chip knj-chip--neutral" title='磁盘上还没有 .wiki：注册 ≠ 建库'>未初始化</span>
+      )}
+      {followedByWorkspace && (
+        <button type='button' className="knj-btn knj-btn--sm" disabled={busy}
+          title={`本面板临时切到了别的库；点此回到当前工作区（${root}）`}
+          onClick={() => { setOverrideRoot(undefined); onVaultChanged() }}>
+          跟随工作区
+        </button>
       )}
       <button type='button' className="knj-icon-btn" title='刷新库列表' onClick={() => { load().catch(() => {}) }}>
         <IconRefresh size={14} />
@@ -226,9 +215,11 @@ export function VaultHeader({ workspaces, sessions, startAgentSession, onVaultCh
       </button>
     </div>
 
-    <select className="knj-select knj-vault__select" value={current?.id ?? ''}
-      onChange={(e) => handleSwitch(e.target.value)} disabled={busy} title='切换知识库'>
-      {vaults.length === 0 && <option value=''>（无知识库）</option>}
+    <select className="knj-select knj-vault__select" value={selectValue}
+      onChange={(e) => handleSwitch(e.target.value)} disabled={busy} title='切换知识库（只影响本面板，不改全局当前库）'>
+      {selectValue === '__follow__' && (
+        <option value='__follow__'>{followLabel}{uninitialized ? ' · 未初始化' : ''}</option>
+      )}
       {vaults.map((v) => (
         <option key={v.id} value={v.id}>{v.name} · {v.pageCount} 页 · {SOURCE_LABEL[v.source] ?? v.source}</option>
       ))}

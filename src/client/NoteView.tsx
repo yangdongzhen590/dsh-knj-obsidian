@@ -22,11 +22,14 @@ export function NoteView({
   brokenLink,
   onNavigate,
   onSaved,
+  root,
 }: {
   note: NoteRef
   brokenLink: string | null
   onNavigate: (id: string) => void
   onSaved?: () => void
+  /** 该会话工作区根：读页/存页都钉在这个库上（undefined 时退回全局当前库）。 */
+  root?: string
 }) {
   const [mode, setMode] = useState<Mode>('preview')
   const [content, setContent] = useState('')
@@ -37,11 +40,16 @@ export function NoteView({
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
+  const pageUrl = () => {
+    const scope = root ? `&root=${encodeURIComponent(root)}` : ''
+    return `/api/obsidian-wiki/page?id=${encodeURIComponent(note.id)}&category=${encodeURIComponent(note.category)}${scope}`
+  }
+
   useEffect(() => {
     let cancelled = false
     setError(null); setNotice(null)
     setDirty(false); setMode('preview')
-    fetch(`/api/obsidian-wiki/page?id=${encodeURIComponent(note.id)}&category=${encodeURIComponent(note.category)}`)
+    fetch(pageUrl())
       .then((r) => r.json())
       .then((data) => {
         if (cancelled) return
@@ -49,11 +57,12 @@ export function NoteView({
         else setContent(renderMarkdown(data.page?.body ?? ''))
       })
       .catch((e) => { if (!cancelled) setError(String(e)) })
-    fetchRawPage(note.id, note.category)
+    fetchRawPage(note.id, note.category, root)
       .then((r) => { if (!cancelled) setRaw(r) })
       .catch(() => { /* 源码拉取失败不打断预览；进入源码态保存时会再报 */ })
     return () => { cancelled = true }
-  }, [note.id, note.category])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note.id, note.category, root])
 
   // wikilink 事件委托：容器级点击监听（渲染 HTML 中的 <a data-wikilink>）
   const onContentClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -77,10 +86,10 @@ export function NoteView({
   const save = async () => {
     setSaving(true); setError(null); setNotice(null)
     try {
-      await saveRawPage(note.id, note.category, raw)
+      await saveRawPage(note.id, note.category, raw, root)
       setDirty(false)
       setNotice('已保存')
-      const res = await fetch(`/api/obsidian-wiki/page?id=${encodeURIComponent(note.id)}&category=${encodeURIComponent(note.category)}`)
+      const res = await fetch(pageUrl())
       const data = await res.json()
       if (!data.error) setContent(renderMarkdown(data.page?.body ?? ''))
       // 广播刷新（边栏树/lint 徽标监听）

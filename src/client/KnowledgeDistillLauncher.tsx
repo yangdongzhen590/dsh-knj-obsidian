@@ -157,10 +157,12 @@ function parseManualIds(text: string): string[] {
 }
 
 /** 知识蒸馏启动器：代码结构采集 / 会话蒸馏统一入口，新建会话把指令交给 Agent。 */
-export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspaces }: {
+export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspaces, root }: {
   startAgentSession?: (instruction: string, cwd?: string) => Promise<{ ok: boolean; message?: string }>
   sessions?: DistillSessionFace
   workspaces?: DistillWorkspaceFace
+  /** 当前会话工作区根：库身份/还原点/初始化状态都按它取（不读全局当前库）。 */
+  root?: string
 }) {
   const [scope, setScope] = useState<DistillScope>('enum')
   const [range, setRange] = useState<DistillRange>('3')
@@ -179,7 +181,7 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
   useEffect(() => {
     let alive = true
     const refresh = () => {
-      fetchVaults()
+      fetchVaults(root)
         .then((r) => {
           if (!alive) return
           setVaultRoot(r.current?.root ?? null)
@@ -190,7 +192,7 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
           setInitialized(r.vaults.find((v) => v.id === r.current?.id)?.initialized ?? null)
         })
         .catch(() => { if (alive) setInitialized(null) })
-      fetchCheckpoints()
+      fetchCheckpoints(root)
         .then((cs) => { if (alive) setCheckpoints(cs) })
         .catch(() => { /* 还原点列表读取失败不阻塞主流程 */ })
     }
@@ -211,7 +213,7 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
       window.removeEventListener('wiki:vault-changed', onVaultChanged)
       window.removeEventListener('focus', onFocus)
     }
-  }, [])
+  }, [root])
 
   // 会话列表（指定会话蒸馏用）：先取全部，再按「当前知识库所属工作区」收敛（工作区 ↔ 知识库一一对应）
   useEffect(() => {
@@ -276,21 +278,23 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
    *  兜底成"已初始化"，导致预填一个不存在的库路径（2026-10-13 实测）。 */
   const canStartSession = Boolean(vaultRoot) && initialized === true
 
-  const send = async (text: string, okText: string) => {
-    // 新会话必须归属当前库所在工作区：库根未知时宁可不建，也不要落到默认工作区
-    if (!vaultRoot) {
-      setMessage('未能确定当前库根目录（/vaults 读取失败）：请点刷新后重试，或改用「复制触发指令」。')
-      return
-    }
-    // 未初始化（或状态未知）：不建会话、不预填蒸馏指令，改为引导初始化
-    if (initialized !== true) {
-      setMessage(initialized === false
-        ? '当前库尚未初始化（磁盘上没有 .wiki）：请先点上面的「初始化知识库」，建好后再蒸馏；也可「复制触发指令」自行处理。'
-        : '当前库的初始化状态未知（/vaults 未返回该库）：请点刷新后重试；为避免把知识写进一个不存在的库，这里不预填指令。')
+  /**
+   * 真正把指令交给 Agent（新建会话 + 预填）：**不检查已初始化态**。
+   *
+   * 为什么必须单独拆出来（2026-10-24 实测）：未初始化工作区里点「初始化知识库」什么都
+   * 没发生——旧实现 initVault 走 send()，而 send() 开头两道守卫先 return：
+   *   1) /vaults 对未初始化工作区返回 current=null → vaultRoot=null → "未能确定库根"；
+   *   2) initialized !== true → 提示"请先点上面的「初始化知识库」"→ 点初始化让你先点初始化（死循环）。
+   * 初始化动作本身必须能跑，库根在未初始化时回退到会话工作区 root（面板已知）。
+   */
+  const startInstruction = async (text: string, okText: string) => {
+    const targetRoot = vaultRoot ?? root
+    if (!targetRoot) {
+      setMessage('未能确定当前库根目录（/vaults 读取失败且宿主未给会话工作区）：请点刷新后重试，或改用「复制触发指令」。')
       return
     }
     const res = startAgentSession
-      ? await startAgentSession(text, vaultRoot)
+      ? await startAgentSession(text, targetRoot)
       : { ok: false, message: '宿主未提供新建会话能力' }
     if (!res.ok) {
       try { await navigator.clipboard.writeText(text) } catch { /* 指令仍可在下方复制 */ }
@@ -300,13 +304,30 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
     setMessage(res.message ? `${okText}（注意：${res.message}）` : okText)
   }
 
+  const send = async (text: string, okText: string) => {
+    // 新会话必须归属当前库所在工作区：库根未知时宁可不建，也不要落到默认工作区
+    if (!vaultRoot) {
+      setMessage('未能确定当前库根目录（/vaults 读取失败）：请点刷新后重试，或改用「复制触发指令」。')
+      return
+    }
+    // 未初始化（或状态未知）：蒸馏会写库，拒绝预填；初始化请走上面的「初始化知识库」
+    if (initialized !== true) {
+      setMessage(initialized === false
+        ? '当前库尚未初始化（磁盘上没有 .wiki）：请先点上面的「初始化知识库」，建好后再蒸馏；也可「复制触发指令」自行处理。'
+        : '当前库的初始化状态未知（/vaults 未返回该库）：请点刷新后重试；为避免把知识写进一个不存在的库，这里不预填指令。')
+      return
+    }
+    await startInstruction(text, okText)
+  }
+
   const initVault = async () => {
     const text = [
       '请初始化当前工作区的知识库：调用 wiki_init 工具创建 .wiki 脚手架',
       '（index.md / .manifest.json / concepts、entities、references、synthesis、projects、dictionaries、tables 目录）。',
       '完成后报告：库根路径、是否新建、当前页数。不要在此步骤采集或写入知识页。',
     ].join('')
-    await send(text, '已新建会话并预填初始化指令：切到该新会话后回车发送，Agent 会用 wiki_init 建库，建好后回来看板蒸馏')
+    // 初始化不能被「未初始化」守卫拦住：直接走不带守卫的通道。
+    await startInstruction(text, '已新建会话并预填初始化指令：切到该新会话后回车发送，Agent 会用 wiki_init 建库，建好后回来看板蒸馏')
   }
 
   const toggleSession = (id: string) => {
@@ -500,7 +521,7 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
                 : `精确回滚到还原点 ${cp.id}？\n整库回到该快照：快照之后新增的页面会被删除（可能是其它会话的正当产物）。`
               if (!window.confirm(question)) return
               try {
-                const r = await restoreCheckpoint(cp.id, mode)
+                const r = await restoreCheckpoint(cp.id, mode, root)
                 setMessage(mode === 'merge'
                   ? `已回滚到 ${cp.id}：恢复 ${r.restored} 页，保留快照后新页 ${r.keptNewer} 页（现 ${r.pageCount} 页），索引已重建`
                   : `已精确回滚到 ${cp.id}（现 ${r.pageCount} 页，快照后新增页已删除），索引已重建`)
@@ -533,6 +554,6 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
 
     {message && <div className="knj-banner knj-banner--info" style={{ color: 'var(--knj-text)' }}>{message}</div>}
 
-    <SemanticIndexPanel />
+    <SemanticIndexPanel root={root} />
   </div>
 }

@@ -1,6 +1,9 @@
 /**
  * v5 笔记工作台（设计 v2）：历史栈导航 + wikilink 原地跳转 + 断链提示。
  * tab.path 种子（id|category）仍是入口；站内导航不再开新标签。
+ *
+ * root = 该笔记所属会话的工作区根（由 index.ts 通过 seat sessionId/useSessions 解析），
+ * 页索引与单页读取都带着它，避免「笔记页签读到全局当前库」的跨库串页。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { NoteView, type NoteRef } from './NoteView.tsx'
@@ -17,16 +20,16 @@ export function parseNotePath(path: string | undefined): { id: string; category:
 /** id → category 索引（wikilink 只带 id，解析落点用） */
 type Index = Map<string, { category: string; title: string }>
 
-export function NoteWorkbench({ path, onPagesChanged }: { path?: string; onPagesChanged?: () => void }) {
+export function NoteWorkbench({ path, onPagesChanged, root }: { path?: string; onPagesChanged?: () => void; root?: string }) {
   const [index, setIndex] = useState<Index>(new Map())
   const [stack, setStack] = useState<NoteRef[]>([])
   const [brokenLink, setBrokenLink] = useState<string | null>(null)
   const seed = parseNotePath(path)
 
-  // 启动拉一次索引
+  // 启动拉一次索引（root 变化时重拉：会话工作区切换后不能沿用旧库索引）
   useEffect(() => {
     let cancelled = false
-    fetchPages()
+    fetchPages(root)
       .then(({ pages }) => {
         if (cancelled) return
         const m: Index = new Map()
@@ -35,7 +38,7 @@ export function NoteWorkbench({ path, onPagesChanged }: { path?: string; onPages
       })
       .catch(() => { /* 索引失败时 wikilink 全部按断链处理 */ })
     return () => { cancelled = true }
-  }, [])
+  }, [root])
 
   // 种子页变化（边栏打开另一篇）→ 重置栈
   useEffect(() => {
@@ -70,7 +73,7 @@ export function NoteWorkbench({ path, onPagesChanged }: { path?: string; onPages
 
   // 保存成功后刷新索引（title 可能改了），并同步边栏
   const handleSaved = useCallback(() => {
-    fetchPages()
+    fetchPages(root)
       .then(({ pages }) => {
         const m: Index = new Map()
         for (const p of pages) m.set(p.id, { category: p.category, title: p.title })
@@ -82,7 +85,7 @@ export function NoteWorkbench({ path, onPagesChanged }: { path?: string; onPages
       })
       .catch(() => { /* 刷新失败不影响已保存状态 */ })
     onPagesChanged?.()
-  }, [onPagesChanged])
+  }, [onPagesChanged, root])
 
   if (!current) return (
     // 注意：.knj-wiki 必须是 .knj-empty 的祖先（styles.ts 用后代选择器 .knj-wiki .knj-empty），
@@ -102,6 +105,6 @@ export function NoteWorkbench({ path, onPagesChanged }: { path?: string; onPages
         </button>
       )}
     </div>
-    <NoteView note={current} brokenLink={brokenLink} onNavigate={navigate} onSaved={handleSaved} />
+    <NoteView note={current} brokenLink={brokenLink} onNavigate={navigate} onSaved={handleSaved} root={root} />
   </div>
 }
