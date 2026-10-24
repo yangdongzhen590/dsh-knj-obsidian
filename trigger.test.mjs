@@ -667,6 +667,67 @@ test('L1 可观测：日志函数抛错不得打断 pre-step（触发层是增�
   assert.ok(events.includes('l1-skip'), '抛错发生在 l1-skip 自身')
 })
 
+// ---------------------------------------------------------------------------
+// 子代理任务里的宿主样板（2026-10-24 重启后实测的第一次假阳性）
+//
+// 现场：探针子代理的任务只是「只回复两个字符：OK」，宿主却在这条 user/message 后面追加了
+// `Your parent agent id is …` 那段返回指引（dsh-subagent 的 withContinuableReturnGuidance，
+// 独立成一个 content block）。于是 workspace / agent / message / transcript 这些词参与了
+// L1 词面匹配，命中一篇 DeepWiki 页——提示直接变成噪声。
+// ---------------------------------------------------------------------------
+
+const SUBAGENT_RETURN_GUIDANCE = 'Your parent agent id is "session-parent". Before you finish, send your result to that agent with '
+  + 'send_message({ agent_id: "session-parent", message: "<self-contained result>" }). The parent shares your '
+  + 'workspace but does not automatically receive your transcript, tool output, or reasoning. Send earlier messages '
+  + 'as well when a finding changes what the parent should do next; sending a message does not end your turn.'
+
+/** 一条带多个 text block 的 user/message（真实子代理任务就是「提示词 + 返回指引」两块）。 */
+function multiBlockUserEvent(seq, blocks) {
+  return { type: 'user/message', seq, data: { source: { kind: 'user' }, content: blocks.map((text) => ({ type: 'text', text })) } }
+}
+
+test('L1：宿主追加的子代理返回指引不得参与词面匹配', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  // 这一页跟「只回复 OK」毫无关系，但词表里全是被样板文本带进来的英文词
+  store.writePage({
+    id: 'workspace-relay', title: 'Workspace 委派与 relay', category: 'concepts',
+    tags: ['agent'], source: 's', confidence: 'extracted', created: NOW, updated: NOW,
+    body: 'parent agent message transcript workspace send_message relay',
+  })
+
+  const host = fakeHost()
+  const { logs, log } = collectLogs()
+  installTrigger(host, { currentReadonly: () => store }, { createNotice: async (text, summary) => notice(text, summary), log })
+  const { agent, injected } = fakeAgent([
+    multiBlockUserEvent(1, ['只回复两个字符：OK。不要调用任何工具，不要读文件，不要解释。', SUBAGENT_RETURN_GUIDANCE]),
+  ])
+  await preStep(host, agent)
+
+  assert.equal(injected.length, 0, '宿主样板不得把无关页顶成「相关」（否则每条子代理任务都被灌一次噪声）')
+  const skip = logs.find((l) => l.event === 'l1-skip')
+  assert.ok(skip, '不注入时同样要留痕')
+  assert.equal(skip.detail.lexical, 0)
+})
+
+test('L1：去样板只去掉宿主追加的块，用户自己写的词照旧参与匹配', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.writePage({
+    id: 'workspace-relay', title: 'Workspace 委派与 relay', category: 'concepts',
+    tags: ['agent'], source: 's', confidence: 'extracted', created: NOW, updated: NOW,
+    body: 'parent agent message transcript workspace send_message relay',
+  })
+
+  const host = fakeHost()
+  installTrigger(host, { currentReadonly: () => store }, { createNotice: async (text, summary) => notice(text, summary) })
+  // 用户自己提到 workspace / agent / message：这是真任务，必须照常命中
+  const { agent, injected } = fakeAgent([userEvent(1, 'workspace 里的 agent message 转发流程怎么走')])
+  await preStep(host, agent)
+  assert.equal(injected.length, 1, '自家原话里的词不得被"去样板"顺手删掉')
+  assert.match(injected[0].text, /workspace-relay/)
+})
+
 test('接线：provider 不可用 / 注入点抛错都不得打断主流程', async () => {
   const host = fakeHost()
   installTrigger(

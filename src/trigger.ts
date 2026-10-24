@@ -438,10 +438,47 @@ function textOfEvent(event: SessionEventLike): string {
 }
 
 /**
+ * 宿主给子代理任务**追加**的委派样板：不是人想干的事，不能参与 L1 的词面匹配。
+ *
+ * 实测（2026-10-24，重启后第一个假阳性）：探针子代理的任务只是「只回复两个字符：OK」，但
+ * dsh-subagent 的 `withContinuableReturnGuidance` 会在同一个 user/message 后面追加一个独立
+ * content block：`Your parent agent id is … send_message(…) … shares your workspace … transcript …`。
+ * 于是 workspace / agent / message / transcript 这些词被喂进匹配器，命中一篇无关页——
+ * 每条子代理任务都白灌一次噪声。
+ *
+ * 只认「整块以该前缀开头」：用户自己在正文里写这些词，仍照常参与匹配。
+ */
+const HARNESS_GUIDANCE_PREFIXES = ['Your parent agent id is ']
+
+function isHarnessGuidance(text: string): boolean {
+  const value = text.trimStart()
+  return HARNESS_GUIDANCE_PREFIXES.some((prefix) => value.startsWith(prefix))
+}
+
+/**
+ * 直接用户任务的文本：与 textOfEvent 同口径，但**丢掉宿主追加的委派样板块**。
+ *
+ * 兜底原则：没命中样板 → 完全走 textOfEvent（保留 tool/result 那类嵌套形状）；
+ * 整条消息都是样板 → 也退回原文（不静默丢掉一个任务）。
+ */
+function directTaskTextOf(event: SessionEventLike): string {
+  const content = event.data?.content
+  if (!Array.isArray(content)) return textOfEvent(event)
+  const textBlocks = content.filter((block) => block?.type === 'text')
+  if (textBlocks.length === 0) return textOfEvent(event)
+  const kept = textBlocks.filter((block) => !isHarnessGuidance(block.text ?? ''))
+  if (kept.length === textBlocks.length) return textOfEvent(event)
+  const joined = kept.map((block) => block.text ?? '').join('\n').trim()
+  return joined.length > 0 ? joined : textOfEvent(event)
+}
+
+/**
  * 最近一条**直接用户**任务（`user/message` 且 `source.kind === 'user'`）。
  * 判据对齐 dsh-doublecheck 的折叠逻辑：插件注入（kind: 'plugin'）、宿主注入的 AGENTS.md
  * （kind: 'agent-instructions'）、运行时上下文快照等一律不算任务——
  * 否则本插件注入的提醒会把自己再触发一次（自激循环）。
+ *
+ * 文本取 directTaskTextOf：宿主给子代理追加的返回指引不算任务原文（见 HARNESS_GUIDANCE_PREFIXES）。
  */
 export function latestDirectUserTask(
   events: readonly SessionEventLike[],
@@ -450,7 +487,7 @@ export function latestDirectUserTask(
   for (const event of events ?? []) {
     if (event?.type !== 'user/message') continue
     if (event.data?.source?.kind !== 'user') continue
-    const text = textOfEvent(event)
+    const text = directTaskTextOf(event)
     if (text.length === 0) continue
     found = { seq: typeof event.seq === 'number' ? event.seq : 0, text }
   }
