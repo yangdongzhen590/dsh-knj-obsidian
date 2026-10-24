@@ -17,7 +17,7 @@ export const name = 'dsh-knj-obsidian'
  * 为什么需要它（2026-10-24）：面板报的仍是旧桥接的失败文案，但无法从现象区分
  * 「浏览器还在跑旧 bundle」还是「新 bundle 里服务没取到」——两种解释指向完全不同的修法。
  */
-const CLIENT_BUILD = '26.10.11' // v13：图谱入场动效克制化（固定 640ms 缓动，大库静态）
+const CLIENT_BUILD = '26.10.2' // 与 npm 版本对齐（yymm.num 方案；前导零非法，npm 会规范化）
 
 /**
  * DSH 0.2 原生右侧栏的扩展面（结构类型，不 import 宿主包）。
