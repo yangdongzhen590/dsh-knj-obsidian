@@ -27,3 +27,6 @@ examples/**/client/dist/
 .npm-cache/
 .pnpm-store/
 
+
+# 图谱预览临时输出（.tmp-graph-preview/）：一次性可视化产物，不入库。
+.tmp-graph-preview/
