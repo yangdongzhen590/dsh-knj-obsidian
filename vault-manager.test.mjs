@@ -24,6 +24,8 @@ function makeManager(opts) {
     registryFile: opts.reg,
     cwdRoot: opts.cwd,
     workspaceRoots: opts.ws ?? [],
+    // 这些用例钉的是既有种子/注册表语义；主库能力由 subvault.test.mjs 单独覆盖
+    subVaults: false,
   })
 }
 

@@ -23,10 +23,12 @@ const EXEC = { deferContext() {}, concludeTurn() {} }
 // 其余稳定字段仍严格比对。
 const CHECKPOINT_ID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/
 function stableOf(res) {
-  const { checkpointId, tagAudit, ...stable } = res
+  const { checkpointId, tagAudit, vaultRoot, vaultRole, ...stable } = res
   assert.equal(typeof checkpointId, 'string', 'checkpointId 应为写前快照 id')
   assert.match(checkpointId, CHECKPOINT_ID_RE)
   assert.equal(typeof tagAudit, 'object', 'tagAudit 应随写页一同回报')
+  assert.equal(vaultRole, 'child', '默认写入应落子库')
+  assert.equal(typeof vaultRoot, 'string', '回执应带库根')
   return stable
 }
 
@@ -77,7 +79,8 @@ test('wiki_ingest：同 contentHash 命中 manifest → skipped:true 且不重�
 
   // 再次 ingest：同 contentHash → 命中 manifest → 跳过，页面与 manifest 都不被重写
   const res2 = await def.execute({ source, pages, contentHash: h }, EXEC)
-  assert.deepEqual(res2, { created: [], updated: [], skipped: true })
+  // 主库+子库模型：跳过回执同样要带落点（vaultRoot=子库根，vaultRole=child）
+  assert.deepEqual(res2, { created: [], updated: [], skipped: true, vaultRoot: dir, vaultRole: 'child' })
   const back = store.readPage('rate-limiting', 'concepts')
   assert.equal(back.updated, updated1) // updated 未被刷新 = 未重写
   assert.equal(store.manifestEntry(source).last_ingested, lastIngested1) // manifest 未被触碰
@@ -126,7 +129,7 @@ test('wiki_ingest：contentHash 原样入库，同 hash 二次 ingest 真正跳�
 
   // 再次 ingest：同 contentHash → 命中 manifest → 跳过，页面不被重写
   const res2 = await def.execute({ source, pages, contentHash: h }, EXEC)
-  assert.deepEqual(res2, { created: [], updated: [], skipped: true })
+  assert.deepEqual(res2, { created: [], updated: [], skipped: true, vaultRoot: dir, vaultRole: 'child' })
   assert.equal(store.readPage('rate-limiting', 'concepts').updated, updated1)
 })
 
@@ -155,8 +158,8 @@ test('wiki_ingest：schema 声明 contentHash 参数与 skipped 输出，两种�
   assert.equal(def.output.schema.properties.skipped.type, 'boolean')
 
   // 跳过与非跳过返回都符合输出 schema（registry 会用它校验，违规会抛 ToolOutputError）
-  const skipRes = { created: [], updated: [], skipped: true }
-  const runRes = { created: ['a'], updated: ['b'], skipped: false }
+  const skipRes = { created: [], updated: [], skipped: true, vaultRoot: dir, vaultRole: 'child' }
+  const runRes = { created: ['a'], updated: ['b'], skipped: false, vaultRoot: dir, vaultRole: 'child' }
   assert.deepEqual(validateJsonSchemaValue(def.output.schema, skipRes), [])
   assert.deepEqual(validateJsonSchemaValue(def.output.schema, runRes), [])
 })

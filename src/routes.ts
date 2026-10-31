@@ -12,6 +12,7 @@ import { createCheckpoint, listCheckpoints, restoreCheckpoint } from './checkpoi
 import { refresherFor, vaultRootOf, type Refresher } from './semantic-refresh.ts'
 import type { VaultProvider } from './types.ts'
 import type { VaultRecord, VaultStoreLike, WikiCategory } from './types.ts'
+import { sanitizeVaultName } from './subvault.ts'
 
 export interface WebServerService {
   register(route: {
@@ -120,8 +121,40 @@ function resolveFollowedVault(
       name: record?.name ?? hit.name,
       root: record?.root ?? projectRoot,
       source: record?.source ?? 'workspace',
+      // 回填 role（评审 R4）：面板据此隐藏主库的"移除"按钮，不能只靠 source==='attached'。
+      role: record?.role ?? 'child',
       pageCount,
     },
+  }
+}
+
+/**
+ * 主库视图（主库+子库模型）：开关关闭或未注册时 null。
+ * 未初始化也如实返回 initialized=false —— UI 据此显示「主库未初始化」而不是假装有主库。
+ */
+function mainVaultInfo(provider: VaultProvider): {
+  id: string
+  name: string
+  root: string
+  source: VaultRecord['source']
+  pageCount: number
+  initialized: boolean
+  role: 'main'
+} | null {
+  const main = typeof provider.mainVault === 'function' ? provider.mainVault() : undefined
+  if (!main) return null
+  let pageCount = 0
+  if (main.initialized) {
+    try { pageCount = main.store.listPagesReadonly().length } catch { pageCount = 0 }
+  }
+  return {
+    id: main.record.id,
+    name: main.name,
+    root: main.root,
+    source: main.record.source,
+    pageCount,
+    initialized: main.initialized,
+    role: 'main',
   }
 }
 
@@ -158,12 +191,13 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: W
             vaults: provider.listVaults(),
             followedRoot: rootParam,
             uninitialized: true,
+            main: mainVaultInfo(provider),
           })
           return
         }
         sendJson(response, 200, followed
-          ? { current: followed.info, vaults: provider.listVaults(), followedRoot: rootParam }
-          : { current: provider.currentRecord(), vaults: provider.listVaults() })
+          ? { current: followed.info, vaults: provider.listVaults(), followedRoot: rootParam, main: mainVaultInfo(provider) }
+          : { current: provider.currentRecord(), vaults: provider.listVaults(), main: mainVaultInfo(provider) })
         return
       }
       if (rootParam && !followed) {
@@ -171,6 +205,15 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: W
           error: `本工作区还没有知识库：${rootParam}；先 wiki_init，或在边栏把该目录挂接/初始化`,
           code: 'vault-not-initialized',
           root: rootParam,
+        })
+        return
+      }
+      // 写主库必须显式（评审 R1）：不带 root 的写请求若正好落在主库上，说明"当前库"是被主库
+      // 占位的（无 cwd / 无 root 的调用方），此时静默写主库会污染跨项目知识。
+      if (!rootParam && method === 'POST' && WRITE_PATHS.has(path) && provider.currentRecord()?.role === 'main') {
+        sendJson(response, 409, {
+          error: '当前库是主知识库：写主库必须显式指定 target=main，或带 ?root=<工作区根> 指向子库',
+          code: 'main-vault-write-needs-explicit-target',
         })
         return
       }
@@ -194,7 +237,9 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: W
         } else if (action === 'attach') {
           const root = typeof payload.root === 'string' && payload.root ? payload.root : ''
           if (!root) throw new SaveError(400, 'field "root" (string) is required')
-          const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : undefined
+          const name = typeof payload.name === 'string' && payload.name.trim()
+            ? sanitizeVaultName(payload.name)
+            : undefined
           provider.attachRoot!(root, name)
         } else if (action === 'remove') {
           const id = typeof payload.id === 'string' && payload.id ? payload.id : ''
@@ -303,7 +348,13 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: W
         // 路径边界（安全）：只允许导入【已注册库根目录内】的 Markdown。
         // 否则同源脚本可借 /import 把用户任意目录里的 .md 拖进可检索/可导出的知识库。
         const target = resolve(payload.path)
-        const roots = provider.listVaults().map((v) => resolve(v.root))
+        // 主库不算「工作区库根」（评审 R10）：否则整个 ~/.dsh 都成了可导入边界，
+        // 同源脚本能把主库里的跨项目页拖进当前库。主库写入只走 wiki_ingest target=main。
+        const mainRoot = typeof provider.mainVault === 'function' ? provider.mainVault()?.root : undefined
+        const roots = provider.listVaults()
+          .filter((v) => v.role !== 'main')
+          .map((v) => resolve(v.root))
+          .filter((root) => !mainRoot || resolve(mainRoot) !== root)
         const contained = roots.some((root) => {
           const rel = relative(root, target)
           return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))

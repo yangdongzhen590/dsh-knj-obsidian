@@ -26,10 +26,13 @@ process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-obsidian-tools-home-'))
 // 其余「稳定字段」仍然严格比对，不用 partialDeepStrictEqual 放宽。
 const CHECKPOINT_ID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/
 function stableOf(res) {
-  const { checkpointId, tagAudit, ...stable } = res
+  const { checkpointId, tagAudit, vaultRoot, vaultRole, ...stable } = res
   assert.equal(typeof checkpointId, 'string', 'checkpointId 应为写前快照 id')
   assert.match(checkpointId, CHECKPOINT_ID_RE)
   assert.equal(typeof tagAudit, 'object', 'tagAudit 应随写页一同回报')
+  // 主库+子库模型（2026-10-25）：回执必须如实带落点；这些用例的 provider 是单库 VaultStore → child
+  assert.equal(vaultRole, 'child', '默认写入应落子库')
+  assert.equal(typeof vaultRoot, 'string', '回执应带库根')
   return stable
 }
 

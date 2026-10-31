@@ -136,12 +136,21 @@ export interface VaultInfo {
   source: 'cwd' | 'workspace' | 'attached'
   /** 该库当前页数（跟随时由服务端按 root 解析后补上） */
   pageCount?: number
+  /** 主库+子库模型：main=本机唯一主库；child/缺省=子库 */
+  role?: 'main' | 'child'
 }
 
 export interface VaultListEntry extends VaultInfo {
   pageCount: number
   /** 磁盘上是否已有 .wiki（注册 ≠ 建库；false 时 UI 提供「初始化知识库」入口） */
   initialized: boolean
+}
+
+/** 主库视图（主库+子库模型）：开关关闭或未注册时服务端不给该字段。 */
+export interface MainVaultInfo extends VaultInfo {
+  pageCount: number
+  initialized: boolean
+  role: 'main'
 }
 
 export interface VaultsResponse {
@@ -151,6 +160,8 @@ export interface VaultsResponse {
   followedRoot?: string
   /** 本次请求带 root 且该工作区没有 .wiki：面板显示「本工作区没有知识库」而不是旧库 */
   uninitialized?: boolean
+  /** 主库（跨项目通用知识）：UI 据此显示「主库」入口 */
+  main?: MainVaultInfo | null
 }
 
 export function fetchVaults(root?: string): Promise<VaultsResponse> {

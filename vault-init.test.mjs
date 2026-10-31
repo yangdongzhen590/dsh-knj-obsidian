@@ -28,7 +28,8 @@ function makeManager(t) {
   mkdirSync(cwd, { recursive: true })
   mkdirSync(wsDir, { recursive: true })
   t.after(() => rmSync(dir, { recursive: true, force: true }))
-  const manager = new VaultManager({ registryFile: reg, cwdRoot: cwd, workspaceRoots: [] })
+  // 这些用例钉的是 init/activate 的既有语义；关闭主库能力，避免读到真实 ~/.dsh 的主库状态
+  const manager = new VaultManager({ registryFile: reg, cwdRoot: cwd, workspaceRoots: [], subVaults: false })
   return { dir, reg, cwd, wsDir, manager }
 }
 

@@ -48,7 +48,8 @@ function makeWorkspace(t, label) {
   const store = new VaultStore(dir)
   store.ensure()
   mkdirSync(join(dir, 'src', 'deep'), { recursive: true })
-  const manager = new VaultManager({ registryFile: join(dir, 'registry.json'), cwdRoot: dir })
+  // 测试必须与真实主库状态无关（主库默认在 ~/.dsh，初始化与否不能改变这些用例）
+  const manager = new VaultManager({ registryFile: join(dir, 'registry.json'), cwdRoot: dir, subVaults: false })
   return { dir, store, manager }
 }
 
@@ -260,11 +261,19 @@ async function preStep(host, agent) {
 /**
  * 触发 L2 的 tools/pre-execute 并返回 host 的决定。
  * `nextCalls` 用于断言「我们确实把决定权先交给了宿主」（waterfall 顺序契约）。
+ *
+ * ⚠️ 宿主形状：`exec.arguments` 是**已解析并深冻结的对象**，不是 JSON 字符串。
+ * dsh-tools 先在管道里 `snapshotJsonValue(exec.arguments)` → `deepFreeze(detached)`，
+ * 之后才 `waterfall("tools/pre-execute", exec, …)`；类型声明写的是
+ * “Losslessly JSON-serializable **parsed** arguments”。字符串只出现在会话日志的
+ * `event.data.arguments` 上（两个平面，别混）。
+ * 这里默认按宿主形状（冻结对象）构造；`asText:true` 用于覆盖日志形态，防止守卫只认一种形状。
  */
-async function gateExecute(host, agent, name, args) {
+async function gateExecute(host, agent, name, args, { asText = false } = {}) {
   let nextCalls = 0
+  const payload = asText ? JSON.stringify(args) : Object.freeze({ ...args })
   const decision = await host.handlers.get('tools/pre-execute')(
-    { name, arguments: JSON.stringify(args), agent },
+    { name, arguments: payload, agent },
     async () => { nextCalls += 1; return { kind: 'allow' } },
   )
   return { decision, nextCalls }
@@ -977,7 +986,7 @@ test('L0 接线：会话工作区没有库 → 不得回退到别人的库（宁
   // 那是真实行为不是缺陷；这里测的是 L0 的契约：**没有库就不许回退到别人的库**。
   const bare = mkdtempSync(join(tmpdir(), 'dsh-obsidian-bare-'))
   t.after(() => rmSync(bare, { recursive: true, force: true }))
-  const manager = new VaultManager({ registryFile: join(bare, 'registry.json'), cwdRoot: bare })
+  const manager = new VaultManager({ registryFile: join(bare, 'registry.json'), cwdRoot: bare, subVaults: false })
 
   const host = fakeHost()
   installTrigger(
@@ -1069,7 +1078,7 @@ test('resolveSessionVault：cwd 在子目录时向上认到工作区根（库在
   // 只读契约：解析不得在磁盘上建出 .wiki
   const bare = mkdtempSync(join(tmpdir(), 'dsh-obsidian-bare-'))
   t.after(() => rmSync(bare, { recursive: true, force: true }))
-  const manager = new VaultManager({ registryFile: join(bare, 'registry.json'), cwdRoot: bare })
+  const manager = new VaultManager({ registryFile: join(bare, 'registry.json'), cwdRoot: bare, subVaults: false })
   assert.equal(manager.readonlyVaultForRoot(bare), undefined)
   assert.equal(existsSync(join(bare, '.wiki')), false, '只读解析绝不建库（这是 L0 的硬契约）')
 })
@@ -1813,7 +1822,7 @@ test('写入闸：默认 off（不误伤 UI 蒸馏）；off 放行 / block 只�
   // 无库会话：没有「写进库」这回事，不拦
   const bare = mkdtempSync(join(tmpdir(), 'dsh-obsidian-nowrite-'))
   t.after(() => rmSync(bare, { recursive: true, force: true }))
-  const manager = new VaultManager({ registryFile: join(bare, 'registry.json'), cwdRoot: bare })
+  const manager = new VaultManager({ registryFile: join(bare, 'registry.json'), cwdRoot: bare, subVaults: false })
   const hostBare = fakeHost()
   installTrigger(
     hostBare,
@@ -1824,4 +1833,45 @@ test('写入闸：默认 off（不误伤 UI 蒸馏）；off 放行 / block 只�
   await preStep(hostBare, bareAgent.agent)
   const r2 = await gateExecute(hostBare, bareAgent.agent, 'wiki_capture', { title: 'x' })
   assert.deepEqual(r2.decision, { kind: 'allow' }, '没有库的会话不该被写入闸打扰')
+})
+
+test('写入闸：显式 target=main 的 wiki_ingest 即使没有会话库也要拦（评审 R11）', async (t) => {
+  // 漏洞成因：`currentVault(session)` 为空时旧实现在写闸里直接 return undefined（放行），
+  // 而 target=main 的写入**不需要**会话库——于是"写进主库"这条完全绕过用户授权。
+  const bare = mkdtempSync(join(tmpdir(), 'dsh-obsidian-mainwrite-'))
+  t.after(() => rmSync(bare, { recursive: true, force: true }))
+  const saved = process.env.KNJ_OBSIDIAN_WRITE_GATE
+  process.env.KNJ_OBSIDIAN_WRITE_GATE = 'ask'
+  t.after(() => {
+    if (saved === undefined) delete process.env.KNJ_OBSIDIAN_WRITE_GATE
+    else process.env.KNJ_OBSIDIAN_WRITE_GATE = saved
+  })
+  const manager = new VaultManager({ registryFile: join(bare, 'registry.json'), cwdRoot: bare, subVaults: false })
+  const host = fakeHost()
+  installTrigger(
+    host,
+    { currentReadonly: () => undefined, readonlyVaultForRoot: (r) => manager.readonlyVaultForRoot(r) },
+    { createNotice: async (text, summary) => notice(text, summary) },
+  )
+  const { agent } = fakeAgent([userEvent(1, '把这条结论记到主库')], { cwd: bare })
+  await preStep(host, agent)
+
+  // 无库会话的普通写入：旧行为不变（没有"写进库"这回事）
+  const plain = await gateExecute(host, agent, 'wiki_ingest', { source: 's', pages: [] })
+  assert.deepEqual(plain.decision, { kind: 'allow' }, '无库会话的普通写入不该被写入闸打扰')
+
+  // 无库会话 + 显式 target=main：必须拦。默认按宿主形状（已解析的冻结对象）构造 ——
+  // 这正是漏洞曾经的藏身处：实现只认 JSON 字符串时这条会红。
+  const toMain = await gateExecute(host, agent, 'wiki_ingest', { source: 's', pages: [], target: 'main' })
+  assert.equal(toMain.decision.kind, 'deny', '显式写主库必须经用户授权（评审 R11）')
+  assert.match(toMain.decision.reason, /用户/)
+
+  // 防守另一半：会话日志形态（JSON 字符串）同样要拦。两种形状都覆盖，
+  // 才能保证「只认一种形状」的错误实现跑不出绿色。
+  const textAgent = fakeAgent([userEvent(1, '把这条结论记到主库')], { cwd: bare }).agent
+  await preStep(host, textAgent)
+  const toMainText = await gateExecute(
+    host, textAgent, 'wiki_ingest', { source: 's', pages: [], target: 'main' }, { asText: true },
+  )
+  assert.equal(toMainText.decision.kind, 'deny', '字符串形状的 target=main 也必须拦（评审 R11）')
 })

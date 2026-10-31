@@ -14,7 +14,7 @@
  */
 import { useEffect, useState } from 'react'
 import { attachVault, fetchVaults, removeVault } from './api.ts'
-import type { VaultInfo, VaultListEntry } from './api.ts'
+import type { MainVaultInfo, VaultInfo, VaultListEntry } from './api.ts'
 import { normalizeRoot } from './session-root.ts'
 import { IconBook, IconChevronDown, IconGear, IconPlus, IconRefresh, IconTrash } from './icons.tsx'
 
@@ -63,6 +63,7 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
 }) {
   const [current, setCurrent] = useState<VaultInfo | null>(null)
   const [vaults, setVaults] = useState<VaultListEntry[]>([])
+  const [main, setMain] = useState<MainVaultInfo | null>(null)
   const [uninitialized, setUninitialized] = useState(false)
   const [notice, setNotice] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null)
   const [manageOpen, setManageOpen] = useState(false)
@@ -85,6 +86,7 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
       setCurrent(r.current)
       setVaults(r.vaults)
       setUninitialized(Boolean(r.uninitialized))
+      setMain(r.main ?? null)
     } catch (e) {
       flash(`库列表加载失败：${e instanceof Error ? e.message : String(e)}`, 'err')
     }
@@ -165,7 +167,24 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
     } finally { setBusy(false) }
   }
 
+  /** 主库还没建 .wiki 时：把初始化交给 Agent（主库逻辑同子库，只是目标是主库根）。 */
+  const doInitMain = async () => {
+    if (!main) return
+    const text = initInstruction().replace('当前工作区的知识库', '主知识库')
+    const res = startAgentSession
+      ? await startAgentSession(text, main.root)
+      : { ok: false, message: '宿主未提供新建会话能力' }
+    if (!res.ok) {
+      try { await navigator.clipboard.writeText(text) } catch { /* 提示里给出降级说明 */ }
+      flash(`无法新建会话（${res.message ?? '未知原因'}）：主库初始化指令已复制`, 'err')
+      return
+    }
+    flash('已新建会话并预填主库初始化指令：切到该会话回车发送，Agent 会用 wiki_init 建主库')
+    setTimeout(() => { load().catch(() => {}) }, 4000)
+  }
+
   const followedByWorkspace = Boolean(overrideRoot && root && normalizeRoot(overrideRoot) !== normalizeRoot(root))
+  const mainActive = Boolean(main && effectiveRoot && normalizeRoot(effectiveRoot) === normalizeRoot(main.root))
   // 下拉 value 必须能匹配到某个 option；否则浏览器回落到**第一个库**（实测显示成 iobs_pro）。
   // 未注册 / 未初始化 / 尚未加载时统一落到「本工作区」占位 option。
   const currentInList = Boolean(current?.id) && vaults.some((v) => v.id === current!.id)
@@ -183,6 +202,15 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
       </span>
       {displayRoot && (
         <span className="knj-vault__path" title={displayRoot}>{displayRoot}</span>
+      )}
+      {main && (
+        <button type='button' className={`knj-chip ${mainActive ? 'knj-chip--neutral' : ''}`} disabled={busy}
+          title={main.initialized
+            ? `主库：${main.root}（跨项目通用知识；子库候选不足时检索会自动补主库）`
+            : `主库还没有 .wiki：${main.root}（点此把初始化交给 Agent）`}
+          onClick={() => { if (mainActive) return; if (!main.initialized) { doInitMain().catch(() => {}); return } setOverrideRoot(main.root); onVaultChanged() }}>
+          主库{main.initialized ? ` · ${main.pageCount} 页` : ' · 未初始化'}
+        </button>
       )}
       <span className="knj-statusbar__spacer" />
       {effectiveRoot && uninitialized && (
@@ -204,7 +232,8 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
       <button type='button' className="knj-icon-btn" title='刷新库列表' onClick={() => { load().catch(() => {}) }}>
         <IconRefresh size={14} />
       </button>
-      {current?.source === 'attached' && (
+      {/* 主库不可移除（评审 R4）：它是本机唯一的跨项目库，误删后 target=main 全部失效。 */}
+      {current?.source === 'attached' && current?.role !== 'main' && (
         <button type='button' className="knj-icon-btn knj-icon-btn--danger" title='从列表移除（不删文件）' onClick={doRemove}>
           <IconTrash size={14} />
         </button>

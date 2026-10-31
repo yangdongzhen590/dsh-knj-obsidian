@@ -64,6 +64,11 @@ export interface VaultRecord {
   root: string
   /** 来源：cwd=宿主启动目录种子；workspace=工作区自动发现；attached=用户显式新建/挂接 */
   source: 'cwd' | 'workspace' | 'attached'
+  /**
+   * 库角色（2026-10-25，主库+子库模型）：`main`=本机唯一主库（跨项目通用知识）；
+   * `child`/缺省=某工作区的子库。旧 registry 没有该字段，一律按 child 处理。
+   */
+  role?: 'main' | 'child'
 }
 
 /** vault 列表条目（含只读页数与是否已初始化 .wiki，供「内容规模」与初始化引导展示） */
@@ -102,6 +107,13 @@ export interface VaultProvider {
    * 「会话在自己工作区里初始化库」，不应改变别的会话/UI 看到的当前库。
    */
   ensureVaultAt?(root: string): VaultStoreLike
+  /**
+   * 主库（本机唯一，跨项目通用知识）。`initialized=false` 表示主库目录还没建 `.wiki`：
+   * 调用方应跳过主库扩展，而不是自动建库。开关关闭时该方法不存在或返回 undefined。
+   */
+  mainVault?(): { store: VaultStoreLike; name: string; root: string; initialized: boolean; record: VaultRecord } | undefined
+  /** 把某个已注册库设为主库（其余库降级为 child）。 */
+  setMainVault?(id: string): VaultRecord | null
 }
 
 /**

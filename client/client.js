@@ -8054,7 +8054,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		* 为什么需要它（2026-10-24）：面板报的仍是旧桥接的失败文案，但无法从现象区分
 		* 「浏览器还在跑旧 bundle」还是「新 bundle 里服务没取到」——两种解释指向完全不同的修法。
 		*/
-		const CLIENT_BUILD = "2026.11.3";
+		const CLIENT_BUILD = "2026.11.9";
 		/** 插件内使用的 tab 类型标识（id 与 kind 取同一个值，便于排查）。 */
 		const WIKI_TAB = "dsh-knj-obsidian:wiki";
 		/** 笔记工作台：由侧栏里点节点触发，靠 openTab 的 params 传 id|category。 */

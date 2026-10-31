@@ -83,6 +83,11 @@ export interface RetrievalCandidate {
    * 摘要让候选自带「这页是什么」——与触发层 L1 一档的提示口径对齐。
    */
   summary?: string
+  /**
+   * 主库扩展标记（2026-10-25）：`main` = 该候选来自主库（跨项目通用知识），
+   * 子库候选不带该字段。调用方据此在输出里标注来源，避免把主库命中当成项目知识。
+   */
+  vault?: 'child' | 'main'
 }
 
 export interface RetrievalResult {

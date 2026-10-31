@@ -7,7 +7,8 @@ import type { WikiCategory, WikiTier, Confidence, WikiPage } from './types.ts'
 import { lintVault, auditTags } from './lint.ts'
 import { loadTaxonomy, SYSTEM_TAG_PREFIX } from './taxonomy.ts'
 import { retrieve, RETRIEVAL_CATEGORIES } from './retriever.ts'
-import type { SemanticPageHit } from './retriever.ts'
+import type { RetrievalOptions, RetrievalResult, SemanticPageHit } from './retriever.ts'
+import { expandMainCandidates } from './subvault.ts'
 import { recordQueryMiss, missLogEnabled } from './miss-log.ts'
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
@@ -240,6 +241,52 @@ function rootOfStore(store: VaultStore): string {
 }
 
 /**
+ * 主库 store（仅当主库已初始化）。
+ *
+ * 为什么必须判 initialized：注册 ≠ 建库。主库目录还没 `.wiki` 时，(a) 检索不该扩过去，
+ * (b) 写入必须明确报错而不是自动建库（建库是显式动作，同 wiki_init 的既有契约）。
+ */
+function mainVaultStore(provider: VaultProvider): { store: VaultStore; name: string; root: string } | undefined {
+  const main = typeof provider.mainVault === 'function' ? provider.mainVault() : undefined
+  if (!main || !main.initialized) return undefined
+  return { store: main.store as VaultStore, name: main.name, root: main.root }
+}
+
+/**
+ * 主库扩展检索（主库+子库模型）：**子库候选不足阈值时**才补主库。
+ *
+ * 合并口径见 `mergeMainCandidates`：整体按分数降序（同分子库在前）、按 id 去重、
+ * 主库命中带 `vault: 'main'`、总数不超过 maxCandidates。
+ *
+ * `index-only` 是"只读本库 index.md"的快速路径，**不扩主库**（评审 R7）：
+ * 用户选这个模式就是要一次不算嵌入、不外扩的本库答案，偷偷补主库会把它变成另一个模式的慢版本。
+ * 失败时静默返回子库结果——主库不可用不该让一次查询失败。
+ */
+function expandWithMain(
+  provider: VaultProvider,
+  child: RetrievalResult,
+  query: string,
+  opts: RetrievalOptions,
+): RetrievalResult {
+  if (opts.mode === 'index-only') return child
+  // 只数**实召回**：语义兜底噪声不能算「子库足够了」（2026-10-25 实测：稀疏库 5 条 0.0x 分 semantic 噪声曾把扩展挡掉）
+  const merged = expandMainCandidates(
+    child,
+    () => {
+      const main = mainVaultStore(provider)
+      return main ? retrieve(main.store, query, opts) : undefined
+    },
+    opts.maxCandidates ?? 10,
+  )
+  // 没扩就原样返回子库结果（保持"零副作用"：不新增字段、不改顺序）。
+  if (!merged.expanded) return child
+  // `expanded`/`mainHits` 是内部账目，工具的 output schema 是 additionalProperties:false，
+  // 对外只暴露 candidates/strategy/totalPages 这类既有字段。
+  const { expanded: _expanded, mainHits: _mainHits, ...plain } = merged
+  return plain
+}
+
+/**
  * wiki_query 的语义兜底阈值：词面候选少于该数时才启用语义层（省算力——嵌入调用只在词面几乎无果时发生）。
  *
  * **不要再放宽这道门。** 2026-10-17 实测否掉了「Top1 分低也兜底」的改法（证据见
@@ -321,6 +368,11 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
     parameters: {
       source: { type: 'string', required: true, description: '源材料标识：文件路径 / URL / agent:<source>' },
       contentHash: { type: 'string', description: '源内容 SHA-256；与 manifest 记录一致时跳过本次 ingest' },
+      target: {
+        type: 'string',
+        enum: ['child', 'main'],
+        description: '写入目标：child/缺省=当前工作区子库（项目知识）；main=主库（跨项目通用知识，需主库已初始化）。只影响本次落点，不改变后续默认。',
+      },
       pages: {
         type: 'array', required: true, description: '提取出的页面',
         items: {
@@ -348,6 +400,9 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
           created: { type: 'array', items: { type: 'string' }, required: true },
           updated: { type: 'array', items: { type: 'string' }, required: true },
           skipped: { type: 'boolean', required: true },
+          /** 本次实际落点（主库+子库模型）：库根 + 角色（child/main），调用方据此确认写到了哪个库 */
+          vaultRoot: { type: 'string', required: true },
+          vaultRole: { type: 'string', required: true },
           // v12：写入前自动创建的还原点 id（缺省表示快照创建失败）——批次级回滚凭据
           checkpointId: { type: 'string' },
           // v9：每页库内相关已有页对账（agent 据此补链/去重）
@@ -385,16 +440,35 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
           : ''
         const ckpt = value.checkpointId ? `；还原点 ${value.checkpointId}（不满意可回滚）` : '；⚠ 本次未能创建还原点'
         const tagTip = value.tagAudit ? `；${renderTagHint(value.tagAudit)}` : ''
-        return [{ type: 'text', text: `写入 wiki：新建 ${value.created.length} 页，更新 ${value.updated.length} 页${ckpt}${tagTip}${tip}` }]
+        const where = value.vaultRole === 'main' ? '主库' : '子库'
+        return [{ type: 'text', text: `写入${where}（${value.vaultRoot}）：新建 ${value.created.length} 页，更新 ${value.updated.length} 页${ckpt}${tagTip}${tip}` }]
       },
     },
     async execute(args, exec) {
-      const store = sessionWriteStore(provider, exec)
+      // 主库+子库写入路由（2026-10-25）：默认写当前工作区**子库**；
+      // target='main' 才写主库，且主库必须已初始化（未初始化报错，不自动建库）。
+      const requestedRole: 'child' | 'main' = args.target === 'main' ? 'main' : 'child'
+      const store = requestedRole === 'main'
+        ? (() => {
+            const main = mainVaultStore(provider)
+            if (main) return main.store
+            const root = typeof provider.mainVault === 'function' ? provider.mainVault()?.root : undefined
+            throw new Error(
+              `主库还没有初始化${root ? `（${root}）` : '（未注册）'}：先在主库执行 wiki_init，`
+              + '或去掉 target="main" 写入当前工作区子库。',
+            )
+          })()
+        : sessionWriteStore(provider, exec)
       if (!store) throw new Error(noVaultMessage(execCwdOf(exec)))
+      const vaultRoot = rootOfStore(store)
+      // 回执必须按**真实落点**算（评审 R1）：旧实现只按 args.target 推导，于是"无会话 cwd
+      // 回退到主库"的写入会返回 vaultRole='child'，调用方以为写进了子库。
+      const mainRoot = typeof provider.mainVault === 'function' ? provider.mainVault()?.root : undefined
+      const vaultRole: 'child' | 'main' = mainRoot && resolve(mainRoot) === vaultRoot ? 'main' : 'child'
       if (args.contentHash) {
         const prev = store.manifestEntry(args.source)
         if (prev && prev.content_hash === args.contentHash) {
-          return { created: [], updated: [], skipped: true }
+          return { created: [], updated: [], skipped: true, vaultRoot, vaultRole }
         }
       }
       const created: string[] = []
@@ -466,7 +540,7 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         const root = rootOfStore(store)
         refresherFor(root).schedule('wiki_ingest')
       } catch { /* 刷新调度失败不影响入库结果 */ }
-      return { created, updated, skipped: false, relatedCheck, checkpointId, tagAudit: tagHintOf(store) }
+      return { created, updated, skipped: false, relatedCheck, checkpointId, tagAudit: tagHintOf(store), vaultRoot, vaultRole }
     },
   }))
 
@@ -840,6 +914,8 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
                 score: { type: 'number', required: true },
                 tier: { type: 'string', required: true },
                 source: { type: 'string', required: true },
+                /** 主库命中标记（'main'）；子库候选不带该字段 */
+                vault: { type: 'string' },
                 /** frontmatter 摘要（有才给）：让候选自带「这页是什么」，模型据此决定是否 wiki_read。 */
                 summary: { type: 'string' },
               },
@@ -859,7 +935,9 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
             text: `检索到 ${value.candidates.length} 条候选（${value.strategy}${args.mode === 'index-only' ? '，按 index.md 目录顺序' : '，按分降序'}）：\n`
               + value.candidates.map((c) => {
                 const sum = c.summary?.trim() ? ` — ${c.summary.trim().replace(/\s+/g, ' ').slice(0, 80)}` : ''
-                return `- ${c.id}(${c.score.toFixed(1)})${sum}`
+                // 主库命中标注来源：避免把跨项目通用知识误当成本工作区的项目知识。
+                const from = c.vault === 'main' ? '[主库] ' : ''
+                return `- ${from}${c.id}(${c.score.toFixed(1)})${sum}`
               }).join('\n'),
           }],
     },
@@ -869,24 +947,25 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
       const vaultRoot = rootOfStore(store)
       const mode = args.mode === 'index-only' ? 'index-only' : 'auto'
       const maxCandidates = args.maxCandidates ?? 10
-      const wordFace = retrieve(store, args.query, { mode, maxCandidates })
+      const opts: RetrievalOptions = { mode, maxCandidates }
+      const wordFace = retrieve(store, args.query, opts)
       // index-only 是「只读 index.md」的快速路径契约，不掺语义层；
       // 词面候选够多时也不打扰语义层（嵌入调用只在词面几乎无果时发生）。
       // 这道门**只有候选数一个条件**：2026-10-17 实测证明再叠一条「Top1 分低也兜底」会让 Top1 精度
       // 从 6/10 掉到 4/10（机制见 SEMANTIC_FALLBACK_MIN_CANDIDATES 的注释），不要加回来。
-      if (mode === 'index-only' || wordFace.candidates.length >= SEMANTIC_FALLBACK_MIN_CANDIDATES) {
-        recordMissIfEmpty(wordFace, args.query, mode, false, vaultRoot)
-        return wordFace
+      let result: RetrievalResult = wordFace
+      let semanticTried = false
+      if (mode !== 'index-only' && wordFace.candidates.length < SEMANTIC_FALLBACK_MIN_CANDIDATES) {
+        const semanticHits = await semanticFallbackHits(args.query, maxCandidates, vaultRoot)
+        semanticTried = semanticFallbackEnabled()
+        if (semanticHits.length > 0) result = retrieve(store, args.query, { ...opts, semanticHits })
       }
-      const semanticHits = await semanticFallbackHits(args.query, maxCandidates, vaultRoot)
-      const semanticTried = semanticFallbackEnabled()
-      if (semanticHits.length === 0) {
-        recordMissIfEmpty(wordFace, args.query, mode, semanticTried, vaultRoot)
-        return wordFace
-      }
-      const merged = retrieve(store, args.query, { mode, maxCandidates, semanticHits })
-      recordMissIfEmpty(merged, args.query, mode, semanticTried, vaultRoot)
-      return merged
+      // 主库扩展（主库+子库模型，2026-10-25）：**只在子库实召回不足阈值时**补主库；
+      // 合并后整体按分数降序（同分时子库在前，见 mergeMainCandidates），主库命中带 vault='main'。
+      // `mode: 'index-only'` 是只读本库索引的快速路径，不扩主库。
+      const expanded = expandWithMain(provider, result, args.query, opts)
+      recordMissIfEmpty(expanded, args.query, mode, semanticTried, vaultRoot)
+      return expanded
     },
   }))
 
