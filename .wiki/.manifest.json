@@ -82,8 +82,8 @@
       ]
     },
     "agent:release-versioning-2026-10-25": {
-      "content_hash": "36413a9b63b6387939008b1e614aedc7ebda5d8dfbcac82f16f3c300de5570a0",
-      "last_ingested": "2026-10-31T15:07:09.315Z",
+      "content_hash": "b6530635cab0b90754027c73b9e92f095fff1421cf2b5445acd8c188f590ee87",
+      "last_ingested": "2026-10-31T15:09:33.172Z",
       "pages_produced": [
         "版本号方案-npm-latest-单调递增"
       ]
