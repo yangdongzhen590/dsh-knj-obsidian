@@ -6922,6 +6922,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		function VaultHeader({ root, workspaces, startAgentSession, onVaultChanged }) {
 			const [current, setCurrent] = (0, react.useState)(null);
 			const [vaults, setVaults] = (0, react.useState)([]);
+			const [main, setMain] = (0, react.useState)(null);
 			const [uninitialized, setUninitialized] = (0, react.useState)(false);
 			const [notice, setNotice] = (0, react.useState)(null);
 			const [manageOpen, setManageOpen] = (0, react.useState)(false);
@@ -6944,6 +6945,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					setCurrent(r.current);
 					setVaults(r.vaults);
 					setUninitialized(Boolean(r.uninitialized));
+					setMain(r.main ?? null);
 				} catch (e) {
 					flash(`库列表加载失败：${e instanceof Error ? e.message : String(e)}`, "err");
 				}
@@ -7024,7 +7026,28 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					setBusy(false);
 				}
 			};
+			/** 主库还没建 .wiki 时：把初始化交给 Agent（主库逻辑同子库，只是目标是主库根）。 */
+			const doInitMain = async () => {
+				if (!main) return;
+				const text = initInstruction().replace("当前工作区的知识库", "主知识库");
+				const res = startAgentSession ? await startAgentSession(text, main.root) : {
+					ok: false,
+					message: "宿主未提供新建会话能力"
+				};
+				if (!res.ok) {
+					try {
+						await navigator.clipboard.writeText(text);
+					} catch {}
+					flash(`无法新建会话（${res.message ?? "未知原因"}）：主库初始化指令已复制`, "err");
+					return;
+				}
+				flash("已新建会话并预填主库初始化指令：切到该会话回车发送，Agent 会用 wiki_init 建主库");
+				setTimeout(() => {
+					load().catch(() => {});
+				}, 4e3);
+			};
 			const followedByWorkspace = Boolean(overrideRoot && root && normalizeRoot(overrideRoot) !== normalizeRoot(root));
+			const mainActive = Boolean(main && effectiveRoot && normalizeRoot(effectiveRoot) === normalizeRoot(main.root));
 			const selectValue = Boolean(current?.id) && vaults.some((v) => v.id === current.id) ? current.id : "__follow__";
 			const displayRoot = current?.root ?? effectiveRoot;
 			const followLabel = current?.name ?? (effectiveRoot ? shortDir(effectiveRoot) : "当前工作区");
@@ -7046,6 +7069,22 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 								className: "knj-vault__path",
 								title: displayRoot,
 								children: displayRoot
+							}),
+							main && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+								type: "button",
+								className: `knj-chip ${mainActive ? "knj-chip--neutral" : ""}`,
+								disabled: busy,
+								title: main.initialized ? `主库：${main.root}（跨项目通用知识；子库候选不足时检索会自动补主库）` : `主库还没有 .wiki：${main.root}（点此把初始化交给 Agent）`,
+								onClick: () => {
+									if (mainActive) return;
+									if (!main.initialized) {
+										doInitMain().catch(() => {});
+										return;
+									}
+									setOverrideRoot(main.root);
+									onVaultChanged();
+								},
+								children: ["主库", main.initialized ? ` · ${main.pageCount} 页` : " · 未初始化"]
 							}),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "knj-statusbar__spacer" }),
 							effectiveRoot && uninitialized && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
@@ -7081,7 +7120,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 								},
 								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconRefresh, { size: 14 })
 							}),
-							current?.source === "attached" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							current?.source === "attached" && current?.role !== "main" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 								type: "button",
 								className: "knj-icon-btn knj-icon-btn--danger",
 								title: "从列表移除（不删文件）",
@@ -8015,7 +8054,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		* 为什么需要它（2026-10-24）：面板报的仍是旧桥接的失败文案，但无法从现象区分
 		* 「浏览器还在跑旧 bundle」还是「新 bundle 里服务没取到」——两种解释指向完全不同的修法。
 		*/
-		const CLIENT_BUILD = "26.10.2";
+		const CLIENT_BUILD = "2026.11.3";
 		/** 插件内使用的 tab 类型标识（id 与 kind 取同一个值，便于排查）。 */
 		const WIKI_TAB = "dsh-knj-obsidian:wiki";
 		/** 笔记工作台：由侧栏里点节点触发，靠 openTab 的 params 传 id|category。 */
