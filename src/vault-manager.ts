@@ -172,9 +172,16 @@ export class VaultManager implements VaultProvider {
     if (this.subVaultsOn) {
       // 主库唯一性：**已登记的 mainVaultId 优先**（评审 R6）。此前无条件把默认根扶正，于是
       // setMainVault() 的结果重启即丢——API 与持久化字段都在，行为却是谎报。
-      const chosen = this.registry.mainVaultId
+      let chosen = this.registry.mainVaultId
         ? this.registry.vaults.find((v) => v.id === this.registry.mainVaultId)
         : undefined
+      // 换机/搬移（2026-11-01）：主库 root 是绝对路径，拷到别的机器（或把目录搬走）后它指向一个
+      // 不存在的目录，而「已登记优先」会让 KNJ_OBSIDIAN_MAIN_VAULT_DIR 永远不生效——改址静默失效。
+      // 只判**目录不存在**：root 在、只是还没有 .wiki 是合法的「已登记未初始化」，不得回退。
+      if (chosen && !existsSync(chosen.root)) {
+        this.registry.mainVaultId = null
+        chosen = undefined
+      }
       if (chosen) {
         chosen.role = 'main'
         for (const v of this.registry.vaults) if (v.role === 'main' && v.id !== chosen.id) v.role = 'child'

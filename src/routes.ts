@@ -12,7 +12,7 @@ import { createCheckpoint, listCheckpoints, restoreCheckpoint } from './checkpoi
 import { refresherFor, vaultRootOf, type Refresher } from './semantic-refresh.ts'
 import type { VaultProvider } from './types.ts'
 import type { VaultRecord, VaultStoreLike, WikiCategory } from './types.ts'
-import { sanitizeVaultName } from './subvault.ts'
+import { mainVaultExposed, sanitizeVaultName } from './subvault.ts'
 
 export interface WebServerService {
   register(route: {
@@ -131,6 +131,9 @@ function resolveFollowedVault(
 /**
  * 主库视图（主库+子库模型）：开关关闭或未注册时 null。
  * 未初始化也如实返回 initialized=false —— UI 据此显示「主库未初始化」而不是假装有主库。
+ *
+ * 2026-11-01 方案 A：默认**不暴露**（`KNJ_OBSIDIAN_MAIN_UI=on` 才恢复）。在这一个源头收口，
+ * 客户端 `{main && ...}`（VaultHeader.tsx:206）自然不渲染主库 chip，客户端零改动。
  */
 function mainVaultInfo(provider: VaultProvider): {
   id: string
@@ -141,6 +144,7 @@ function mainVaultInfo(provider: VaultProvider): {
   initialized: boolean
   role: 'main'
 } | null {
+  if (!mainVaultExposed()) return null
   const main = typeof provider.mainVault === 'function' ? provider.mainVault() : undefined
   if (!main) return null
   let pageCount = 0
@@ -165,6 +169,13 @@ export interface WikiRoutesDeps {
 
 export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: WikiRoutesDeps = {}): () => void {
   const getRefresher = deps.refresherFor ?? refresherFor
+  // 2026-11-01 方案 A：主库默认不暴露时，连下拉列表里的条目一起去掉。只藏 `main` 字段不够——
+  // 客户端下拉是 `vaults.map(...)`（VaultHeader.tsx:252），主库记录留在列表里就仍是一个
+  // 「点进去 GET 全 409」的可选项，等于把死路从 chip 挪到了下拉框。
+  const uiVaults = () => {
+    const all = provider.listVaults()
+    return mainVaultExposed() ? all : all.filter((v) => v.role !== 'main')
+  }
   const handler = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const url = new URL(request.url ?? '/', 'http://localhost')
     const path = url.pathname
@@ -188,7 +199,7 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: W
           // 未初始化工作区：current=null + uninitialized，面板据此显示「本工作区没有知识库」
           sendJson(response, 200, {
             current: null,
-            vaults: provider.listVaults(),
+            vaults: uiVaults(),
             followedRoot: rootParam,
             uninitialized: true,
             main: mainVaultInfo(provider),
@@ -196,8 +207,8 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: W
           return
         }
         sendJson(response, 200, followed
-          ? { current: followed.info, vaults: provider.listVaults(), followedRoot: rootParam, main: mainVaultInfo(provider) }
-          : { current: provider.currentRecord(), vaults: provider.listVaults(), main: mainVaultInfo(provider) })
+          ? { current: followed.info, vaults: uiVaults(), followedRoot: rootParam, main: mainVaultInfo(provider) }
+          : { current: provider.currentRecord(), vaults: uiVaults(), main: mainVaultInfo(provider) })
         return
       }
       if (rootParam && !followed) {
@@ -249,7 +260,7 @@ export function mountWikiRoutes(host: WikiHost, provider: VaultProvider, deps: W
           sendJson(response, 404, { error: 'not found' })
           return
         }
-        sendJson(response, 200, { current: provider.currentRecord(), vaults: provider.listVaults() })
+        sendJson(response, 200, { current: provider.currentRecord(), vaults: uiVaults() })
         return
       }
       // ---- v8 语义检索：状态 + 手动刷新（只读 store 视图；刷新只写 ~/.dsh/qmd 外部索引，不碰 vault） ----

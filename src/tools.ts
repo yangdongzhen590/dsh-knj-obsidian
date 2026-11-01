@@ -453,9 +453,11 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
             const main = mainVaultStore(provider)
             if (main) return main.store
             const root = typeof provider.mainVault === 'function' ? provider.mainVault()?.root : undefined
+            // 2026-11-01 方案 A：主库暂时不对外开放（面板与 L0 均不暴露），初始化入口也不在 UI 上。
+            // 旧文案指引"先去主库执行 wiki_init"是一条走不通的死胡同 —— 别把用户推过去。
             throw new Error(
-              `主库还没有初始化${root ? `（${root}）` : '（未注册）'}：先在主库执行 wiki_init，`
-              + '或去掉 target="main" 写入当前工作区子库。',
+              `主库还没有初始化${root ? `（${root}）` : '（未注册）'}：主库目前是实验性能力，暂不对外开放；`
+              + '要写入请去掉 target="main"（写当前工作区子库）。',
             )
           })()
         : sessionWriteStore(provider, exec)

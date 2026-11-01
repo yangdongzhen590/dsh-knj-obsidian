@@ -20,6 +20,7 @@ import { join, resolve } from 'node:path'
 import type { VaultStore } from './vault-store.ts'
 import type { WikiCategory, WikiPage } from './types.ts'
 import { semanticRawHits, semanticFallbackEnabled, toCandidateHints, warmSemanticRuntime } from './semantic-hits.ts'
+import { mainVaultExposed } from './subvault.ts'
 
 export interface TriggerCandidate {
   id: string
@@ -1346,6 +1347,30 @@ export interface VaultProviderLike {
 }
 
 /**
+ * L0 里的主库行（2026-11-01 方案 A）：默认**不注入**，`KNJ_OBSIDIAN_MAIN_UI=on` 且主库已初始化才给。
+ *
+ * 抽成纯函数是为了让门控能被单测钉住 —— 原来它是内联 IIFE，门控写错只能靠端到端发现。
+ * 失败一律静默（L0 不得影响主流程）。
+ *
+ * @param provider - 只读依赖面（`mainVault` 可缺省）
+ * @param env - 环境变量（默认 process.env；测试注入用）
+ * @returns 主库行；不该注入时 undefined
+ */
+export function mainLineForL0(
+  provider: Pick<VaultProviderLike, 'mainVault'>,
+  env: Record<string, string | undefined> = process.env,
+): { name: string; pageCount: number } | undefined {
+  if (!mainVaultExposed(env)) return undefined
+  try {
+    const m = provider.mainVault?.()
+    if (!m || !m.initialized) return undefined
+    return { name: m.name, pageCount: m.store.listPagesReadonly().length }
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * 解析「本会话该用哪个库」：
  *   1) 会话 cwd 命中的库（L0 的正解）——只读解析，不写盘、不建库；
  *   2) **只在会话没给 cwd 时**才回退 provider 的当前库（旧行为，兼容没有 header 的宿主/测试）。
@@ -1578,14 +1603,8 @@ export function installTrigger(
       if (hasNoticeWithPrefix(events, VAULT_IDENTITY_SUMMARY)) return
       const resolved = resolveSessionVault(provider, sessionCwdOf(agent!.session))
       if (!resolved || resolved.identity.pageCount === 0) return
-      // 主库身份（主库+子库模型）：只在主库已初始化时多给一行；失败静默（L0 不得影响主流程）
-      const main = (() => {
-        try {
-          const m = provider.mainVault?.()
-          if (!m || !m.initialized) return undefined
-          return { name: m.name, pageCount: m.store.listPagesReadonly().length }
-        } catch { return undefined }
-      })()
+      // 主库身份（主库+子库模型）：默认不注入；`KNJ_OBSIDIAN_MAIN_UI=on` 且已初始化才多给一行。
+      const main = mainLineForL0(provider)
       agent!.inject?.(await createNotice(
         renderVaultIdentity(resolved.identity, main),
         renderVaultIdentitySummary(resolved.identity),

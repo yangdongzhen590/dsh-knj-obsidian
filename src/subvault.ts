@@ -15,6 +15,15 @@ import type { RetrievalResult } from './retriever.ts'
 export const SUBVAULTS_ENV = 'KNJ_OBSIDIAN_SUBVAULTS'
 /** 主库位置覆盖（项目根目录，`.wiki` 在其下）。默认 `~/.dsh`（即 `~/.dsh/.wiki`）。 */
 export const MAIN_ROOT_ENV = 'KNJ_OBSIDIAN_MAIN_VAULT_DIR'
+/**
+ * 主库**对外暴露**开关（2026-11-01，方案 A）：默认不暴露 —— 面板不出主库入口、L0 不注主库行。
+ * 能力本身（`target='main'` 写入、检索扩展、注册表、全部代码与数据）一律保留；写 `on` 原样恢复。
+ *
+ * 为什么默认关：主库当前「写得到、搜得到片段、读不回正文」，面板点进去是死路（chip 切了标题
+ * 不换数据、GET 按主库根全 409）。把不可用的入口摆在面板上，比不摆更伤人。
+ * ⚠️ 恢复前必须先补齐「按 id 读回主库正文」与「面板按库取数」，否则装回去的还是坏入口。
+ */
+export const MAIN_UI_ENV = 'KNJ_OBSIDIAN_MAIN_UI'
 /** 子库候选少于该数时才扩主库：与语义兜底同量级，只补召回。 */
 export const MAIN_EXPANSION_MIN_CANDIDATES = 3
 /** 主库展示名（registry 里可随时改；这里只是默认值）。 */
@@ -30,6 +39,19 @@ const OFF_VALUES = new Set(['off', 'false', '0', 'no', 'disabled'])
 /** 主库能力是否开启（默认开；`off`/`false`/`0`/`no`/`disabled` 关闭）。 */
 export function subVaultsEnabled(env: Env = process.env): boolean {
   return !OFF_VALUES.has((env[SUBVAULTS_ENV] ?? '').trim().toLowerCase())
+}
+
+/** 打开暴露开关的等价写法（与 OFF_VALUES 对称：用户手写 `true`/`1`/`yes` 也是想开）。 */
+const ON_VALUES = new Set(['on', 'true', '1', 'yes', 'enabled'])
+
+/**
+ * 主库是否向面板与 L0 暴露（**默认否**；`on`/`true`/`1`/`yes`/`enabled` 打开）。
+ *
+ * 与 `subVaultsEnabled` 是**两个独立开关**：总开关管「能力在不在」，这个只管「对外露不露」。
+ * 因此关掉暴露不会影响 `target='main'` 写入与检索扩展（方案 A 的核心取舍）。
+ */
+export function mainVaultExposed(env: Env = process.env): boolean {
+  return ON_VALUES.has((env[MAIN_UI_ENV] ?? '').trim().toLowerCase())
 }
 
 /**

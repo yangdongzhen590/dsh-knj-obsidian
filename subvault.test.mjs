@@ -9,9 +9,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const ROOT = process.cwd()
@@ -31,6 +31,28 @@ function sandbox() {
   const registry = join(dir, 'vaults.json')
   return { dir, child, main, registry }
 }
+
+// ---- 主库暴露开关（方案 A，2026-11-01）----
+// 主库默认不向面板/L0 暴露；`KNJ_OBSIDIAN_MAIN_UI=on` 原样恢复。改 process.env 必须在
+// finally 里还原，否则用例之间会互相污染（node:test 同文件内串行执行）。
+const MAIN_UI = 'KNJ_OBSIDIAN_MAIN_UI'
+
+async function withEnv(vars, fn) {
+  const prev = new Map()
+  for (const [k, v] of Object.entries(vars)) {
+    prev.set(k, process.env[k])
+    process.env[k] = v
+  }
+  try {
+    return await fn()
+  } finally {
+    for (const [k, v] of prev) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  }
+}
+
 
 function makeManager(sb, extra = {}) {
   return new VaultManager({
@@ -183,7 +205,9 @@ test('GET /vaults?root=<子库> 回填 main，current 仍是子库', async () =>
     await handler({ url, method: 'GET', headers: {}, on() {} }, res)
     return out
   }
-  const res = await call('/api/obsidian-wiki/vaults?root=' + encodeURIComponent(sb.child))
+  // 2026-11-01 方案 A：主库默认不暴露，本用例断言的是「暴露时的形状」，故显式开开关
+  const res = await withEnv({ [MAIN_UI]: 'on' }, () =>
+    call('/api/obsidian-wiki/vaults?root=' + encodeURIComponent(sb.child)))
   assert.equal(res.status, 200)
   assert.equal(res.body.current?.root, sb.child, 'current 必须是子库，不能被子库顶替成主库')
   assert.equal(res.body.main?.root, sb.main)
@@ -211,14 +235,15 @@ test('wiki_ingest 写入路由：默认子库；target=main 写主库；主库�
   assert.ok(existsSync(join(sb.child, '.wiki', 'concepts', 'p1.md')))
 
   // 主库未初始化：必须明确报错，且绝不自动建 .wiki
-  await assert.rejects(
-    () => ingest.execute({
-      source: 'agent:test-main',
-      target: 'main',
-      pages: [{ id: 'p2', title: 'P2', category: 'concepts', body: 'main body' }],
-    }, EXEC),
-    /主库还没有初始化/,
-  )
+  const err = await ingest.execute({
+    source: 'agent:test-main',
+    target: 'main',
+    pages: [{ id: 'p2', title: 'P2', category: 'concepts', body: 'main body' }],
+  }, EXEC).then(() => null, (e) => e)
+  assert.ok(err, '主库未初始化必须报错')
+  assert.match(err.message, /主库还没有初始化/)
+  // 2026-11-01 方案 A：主库初始化入口已撤销，文案不得再指引一条走不通的 wiki_init 死胡同
+  assert.doesNotMatch(err.message, /wiki_init/, '未初始化文案不得再指引 wiki_init')
   assert.equal(existsSync(join(sb.main, '.wiki')), false, '写主库失败不得自动建库')
 
   // 初始化主库（模拟 wiki_init）后可显式写主库
@@ -232,4 +257,78 @@ test('wiki_ingest 写入路由：默认子库；target=main 写主库；主库�
   assert.equal(r2.vaultRoot, sb.main)
   assert.ok(existsSync(join(sb.main, '.wiki', 'concepts', 'm1.md')), 'target=main 应写进主库')
   assert.equal(existsSync(join(sb.child, '.wiki', 'concepts', 'm1.md')), false, '不得同时写子库')
+})
+
+// ---------- 方案 A：主库暴露面收缩（2026-11-01）----------
+//
+// 背景：主库当前「能写、能搜片段、读不回正文、面板点进去是死路」。与其把坏入口留在面板上，
+// 不如默认不暴露、能力与数据全部保留，`KNJ_OBSIDIAN_MAIN_UI=on` 原样恢复。
+// 这几条用例钉住的就是「默认看不到」与「开关能原样恢复」两件事。
+
+test('主库暴露开关：默认 /vaults 的 main 为 null 且列表不含主库；KNJ_OBSIDIAN_MAIN_UI=on 才暴露', async () => {
+  const sb = sandbox()
+  const mgr = makeManager(sb)
+  let handler
+  mountWikiRoutes({ webServer: { register: (r) => { handler = r.handler; return () => {} } } }, mgr, {
+    refresherFor: () => ({ status: async () => ({}), refreshNow: async () => {} }),
+  })
+  const call = async (url) => {
+    const out = { status: 0, body: undefined }
+    const res = { setHeader() {}, writeHead(s) { out.status = s; return res }, end(p) { out.body = p ? JSON.parse(p) : undefined } }
+    await handler({ url, method: 'GET', headers: {}, on() {} }, res)
+    return out
+  }
+  const url = '/api/obsidian-wiki/vaults?root=' + encodeURIComponent(sb.child)
+
+  const off = await withEnv({ [MAIN_UI]: '' }, () => call(url))
+  assert.equal(off.status, 200)
+  assert.equal(off.body.main, null, '默认不向面板暴露主库（chip 完全由 main 驱动）')
+  assert.ok(off.body.vaults.every((v) => v.role !== 'main'), '默认下拉列表里不得留下点进去就是死路的主库条目')
+  assert.equal(off.body.current?.root, sb.child, '默认下 current 不受影响')
+
+  const on = await withEnv({ [MAIN_UI]: 'on' }, () => call(url))
+  assert.equal(on.body.main?.root, sb.main, 'on 时主库信息原样恢复')
+  assert.equal(on.body.main?.role, 'main')
+  assert.equal(on.body.main?.initialized, false, '未初始化也如实返回')
+  assert.ok(on.body.vaults.some((v) => v.role === 'main'), 'on 时主库回到下拉列表')
+})
+
+test('L0 主库行：默认不注入；on 且已初始化才注入；未初始化永不注入', async () => {
+  const trigger = await libImport('trigger.js')
+  assert.equal(typeof trigger.mainLineForL0, 'function', '应导出纯函数 mainLineForL0（L0 门控要能被单测钉住）')
+  const mk = (initialized, pages) => ({
+    mainVault: () => ({ name: '主知识库', initialized, store: { listPagesReadonly: () => pages } }),
+  })
+  assert.equal(trigger.mainLineForL0(mk(true, [{}, {}, {}]), {}), undefined, '默认不注入主库行')
+  assert.equal(trigger.mainLineForL0({}, { [MAIN_UI]: 'on' }), undefined, '没有主库不注入')
+  assert.equal(trigger.mainLineForL0(mk(false, []), { [MAIN_UI]: 'on' }), undefined, '未初始化不注入')
+  assert.deepEqual(
+    trigger.mainLineForL0(mk(true, [{}, {}, {}]), { [MAIN_UI]: 'on' }),
+    { name: '主知识库', pageCount: 3 },
+    'on 且已初始化：原样恢复',
+  )
+})
+
+test('seed：已登记主库 root 目录消失时回退默认根，且不误伤「已登记未初始化」', () => {
+  const sb = sandbox()
+  const goneRoot = join(sb.dir, 'old-home')
+  mkdirSync(goneRoot, { recursive: true })
+  const first = makeManager(sb, { mainRoot: goneRoot })
+  assert.equal(resolve(first.mainVault().root), resolve(goneRoot), '前置：主库登记在 old-home')
+  rmSync(goneRoot, { recursive: true, force: true }) // 换机/搬移：旧根不存在了
+
+  const newHome = join(sb.dir, 'new-home')
+  mkdirSync(newHome, { recursive: true })
+  const second = makeManager(sb, { mainRoot: newHome })
+  assert.equal(resolve(second.mainVault()?.root ?? ''), resolve(newHome), '旧根消失 → 回退当前默认根（否则改址永远不生效）')
+  const saved = JSON.parse(readFileSync(sb.registry, 'utf8'))
+  const rec = saved.vaults.find((v) => resolve(v.root) === resolve(newHome))
+  assert.ok(rec, '新默认根应被登记')
+  assert.equal(saved.mainVaultId, rec.id, 'mainVaultId 必须重写到新根')
+
+  // 误伤防护：根存在、只是还没有 .wiki = 合法的「已登记未初始化」，不得被回退
+  const sb2 = sandbox()
+  makeManager(sb2, { mainRoot: sb2.main })
+  const again = makeManager(sb2, { mainRoot: sb2.main })
+  assert.equal(resolve(again.mainVault().root), resolve(sb2.main), '已登记未初始化不得被回退')
 })
