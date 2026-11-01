@@ -75,12 +75,16 @@ t('CLI 集成：会话目录只有 session.v4.jsonl.zstd 时也能蒸到该会�
   try {
     const projDir = path.join(root, 'sessions', '--proj--', 'sess-v4');
     fs.mkdirSync(projDir, { recursive: true });
-    const jsonl = [
-      JSON.stringify({ type: 'session', id: 'sess-v4', cwd: 'D:\\proj', delegationDepth: 0, time: Date.parse('2026-11-01T10:00:00.000Z') }),
-      JSON.stringify({ type: 'user/message', time: Date.parse('2026-11-01T10:00:01.000Z'), data: { message: { content: [{ type: 'text', text: '验证 v4 命名发现' }] } } }),
-      JSON.stringify({ type: 'assistant/message', time: Date.parse('2026-11-01T10:00:02.000Z'), data: { message: { content: [{ type: 'text', text: '已完成验证' }] } } }),
-    ].join('\n');
-    fs.writeFileSync(path.join(projDir, 'session.v4.jsonl.zstd'), zlib.zstdCompressSync(Buffer.from(jsonl, 'utf8')));
+    // 夹具与真实导出同形：每行一个独立 zstd 帧（宿主按事件追加），
+    // 首帧是 session 头（有 createdAt、无 time），后续事件 time 为数字 epoch ms。
+    const t0 = Date.parse('2026-11-01T10:00:00.000Z');
+    const frame = (o) => zlib.zstdCompressSync(Buffer.from(JSON.stringify(o) + '\n', 'utf8'));
+    const events = [
+      { type: 'session', version: 4, id: 'sess-v4', createdAt: t0, cwd: 'D:\\proj', isSeeded: false, delegationDepth: 0, agentPreset: 'default' },
+      { type: 'user/message', seq: 1, time: t0 + 1000, data: { message: { role: 'user', content: [{ type: 'text', text: '验证 v4 命名发现' }], source: { plugin: 'test' }, id: 'm1' } } },
+      { type: 'assistant/message', seq: 2, time: t0 + 2000, data: { message: { role: 'assistant', content: [{ type: 'text', text: '已完成验证' }], id: 'm2' } } },
+    ];
+    fs.writeFileSync(path.join(projDir, 'session.v4.jsonl.zstd'), Buffer.concat(events.map(frame)));
 
     const outDir = path.join(root, 'out');
     const r = spawnSync(process.execPath, [script, path.join(root, 'sessions'), outDir, '--proj--', '', ''], { encoding: 'utf8' });
@@ -89,6 +93,7 @@ t('CLI 集成：会话目录只有 session.v4.jsonl.zstd 时也能蒸到该会�
     const catalog = JSON.parse(fs.readFileSync(path.join(outDir, 'catalog.json'), 'utf8'));
     assert.strictEqual(catalog.length, 1);
     assert.strictEqual(catalog[0].dir, 'sess-v4');
+    assert.strictEqual(catalog[0].userMsgCount, 1, '多帧解码后应识别出 1 条用户消息');
     assert.ok(catalog[0].digestFile, 'catalog 应记录 digestFile');
     assert.ok(
       fs.readFileSync(path.join(outDir, catalog[0].digestFile), 'utf8').includes('验证 v4 命名发现'),
