@@ -58,7 +58,30 @@ function sessionIncluded(sessDir, sessionFilter) {
   return raw.split(',').map(s => s.trim()).filter(Boolean).some(frag => name === frag || name.startsWith(frag));
 }
 
-module.exports = { shouldIncludeFile, isTopLevel, digestSubagent, redact, sessionIncluded };
+/**
+ * 会话文件发现：宿主导出的文件名带格式版本号（当前是 session.v4.jsonl.zstd），
+ * 旧版本导出的是不带版本号的 session.jsonl.zstd。
+ * 同一会话目录里可能有多个版本并存 —— 取版本号最高的那个（内容最新），
+ * 没有带版本号的文件时才退回旧的 session.jsonl.zstd。
+ * 返回要读取的文件名；一个都不匹配返回 undefined（调用方据此 continue）。
+ */
+function pickSessionFile(names) {
+  const VERSIONED = /^session\.v(\d+)\.jsonl\.zstd$/;
+  const PLAIN = /^session\.jsonl\.zstd$/;
+  let best;
+  for (const n of Array.isArray(names) ? names : []) {
+    const m = VERSIONED.exec(String(n));
+    if (m) {
+      const version = Number(m[1]);
+      if (!best || version > best.version) best = { name: n, version };
+      continue;
+    }
+    if (PLAIN.test(String(n)) && !best) best = { name: n, version: 0 };
+  }
+  return best ? best.name : undefined;
+}
+
+module.exports = { shouldIncludeFile, isTopLevel, digestSubagent, redact, sessionIncluded, pickSessionFile };
 
 // ---------- extraction pipeline ----------
 
@@ -82,8 +105,11 @@ async function main() {
     const projDir = path.join(sessionsRoot, proj);
     for (const sessDir of fs.readdirSync(projDir)) {
       if (!sessionIncluded(sessDir, sessionFilter)) continue;
-      const f = path.join(projDir, sessDir, 'session.jsonl.zstd');
-      if (!fs.existsSync(f)) continue;
+      let entries;
+      try { entries = fs.readdirSync(path.join(projDir, sessDir)); } catch { continue; }
+      const name = pickSessionFile(entries);
+      if (!name) continue;
+      const f = path.join(projDir, sessDir, name);
       const st = fs.statSync(f);
       if (st.size === 0 || !shouldIncludeFile(st.mtimeMs, minMtime)) continue;
       let text;
