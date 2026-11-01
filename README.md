@@ -20,6 +20,31 @@ dsh plugin --profile web add ./dsh-knj-obsidian-2026.8.257.tgz
 
 安装后插件在 DSH 启动时自动向 agent 暴露工具（`wiki_ingest` / `wiki_capture` / `wiki_normalize_tags` / `wiki_lint` / `wiki_query` / `wiki_drill` / `wiki_read` / `wiki_export` / `wiki_mine` / `wiki_init` / `wiki_checkpoint` / `wiki_checkpoints` / `wiki_search_semantic`），并随包分发 5 个 `wiki-*` skill，无需额外配置。
 
+## 宿主兼容（重要）
+
+从 **2026.11.12** 起，本包**不再**声明 `@deepseek-ai/dsh-llm` / `@deepseek-ai/dsh-tools` 的 `peerDependencies`。
+
+原因：DSH 至今**没有任何正式版**，`latest` 一直是 `0.2.1-rc.5` 这类预发布版；而 semver 规定预发布版只能被**同一 `x.y.z`** 上的预发布比较符命中，因此 `>=0.1.2-rc.1 <0.3.0-0` 这种写法永远放行不了 `0.2.1-rc.5`——npm 安装期必然报：
+
+```
+npm error code ERESOLVE
+npm error peerOptional @deepseek-ai/dsh-llm@">=0.1.2-rc.1 <0.3.0-0" from dsh-knj-obsidian@2026.11.11
+```
+
+（这两条即使标了 `optional` 也照样拦。）而这两个包本来就由宿主在运行时提供，`peerDependencies` 只影响**安装期解析**、对运行时没有任何作用，所以移除它们不改变任何行为，只是不再把「宿主升级到新 rc」变成「插件装不上」。
+
+兼容性改由两处承载：
+
+- **`engines.dsh`**：`>=0.1.2-rc.1`（只写下界；npm 默认不强制 engines，`--engine-strict` 时才拦）
+- **启动日志**：DSH 启动时会打印一行
+  `[dsh-knj-obsidian] v<版本> loaded (node <node版本>, cwd <目录>)`
+  **这行没出现，就说明插件包根本没被加载**（例如 Cordis 因 `package.json` 带 UTF-8 BOM 而静默跳过整个 bundle）。
+
+已测宿主范围：`0.1.2-rc.1` ~ `0.2.1-rc.5`。
+
+> 老版本（≤ 2026.11.11）在 `0.2.1-rc.x` 宿主上安装会 ERESOLVE，临时绕过：
+> `npm i dsh-knj-obsidian@2026.11.11 --legacy-peer-deps`，或改用 pnpm（`autoInstallPeers: false`，对未满足的 optional peer 只 warning）。
+
 ## v1 能力
 
 | 工具 | 作用 |

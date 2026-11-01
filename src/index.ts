@@ -1,5 +1,6 @@
 // src/index.ts
 import type { Context } from '@deepseek-ai/cordis'
+import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { VaultManager } from './vault-manager.ts'
@@ -27,7 +28,22 @@ function defaultRegistryPath(): string {
   return join(dshHome, 'knj-obsidian', 'vaults.json')
 }
 
+/** 读包自身版本（lib/index.js → ../package.json）：避免版本号在代码里再抄一份。 */
+function pluginVersion(): string {
+  try {
+    const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+    return (JSON.parse(raw) as { version?: string }).version ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
 export function apply(ctx: Context, config?: Config): void {
+  // 启动自检（2026.11.12 起）：本包**不再**声明 @deepseek-ai/dsh-llm|dsh-tools 的 peerDependency
+  // —— 那两条在预发布宿主（如 0.2.1-rc.5）上必然让 npm 安装期 ERESOLVE，而对运行时毫无作用。
+  // 代价是安装期不再有版本闸门，所以这一行成为唯一的可观测信号：
+  // **插件没被加载时它不会出现**（例如 Cordis 因 package.json 带 BOM 静默跳过整个 bundle）。
+  console.log(`[dsh-knj-obsidian] v${pluginVersion()} loaded (node ${process.version}, cwd ${process.cwd()})`)
   // skill 注册：包内 5 个 skill 只有注册过才进模型 catalog（详见 src/skill-provider.ts）。
   // 刻意用**独立的** ctx.inject(['skills'])：'skills' 绝不并入下面那支 inject——
   // 硬依赖缺失会让该 entry 置 INACTIVE，连带 tools/routes/trigger 一起静默失效；
