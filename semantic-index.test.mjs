@@ -23,6 +23,20 @@ import {
   createSemanticRuntime,
   MODEL_DOWNLOAD_URL,
 } from './lib/semantic-index.js'
+import { createRequire } from 'node:module'
+
+// @tobilu/qmd 自 v2026.9.152 起是「可选 peer」（autoInstallPeers:false 下不再随插件安装），
+// 只有真正装了语义检索依赖的环境才能走「真实库分支」。裸 clone 上按可用性跳过这条用例，
+// 避免把「依赖未装」误报成代码回归；装了 qmd 的环境仍会完整执行。
+const qmdInstalled = (() => {
+  try {
+    createRequire(import.meta.url).resolve('@tobilu/qmd')
+    return true
+  } catch {
+    return false
+  }
+})()
+const qmdSkip = qmdInstalled ? false : '@tobilu/qmd 未安装（可选 peer）：跳过真实库分支用例'
 
 function tmp(t) {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-semantic-'))
@@ -297,7 +311,7 @@ test('offlineModelEnv：三个 QMD_* 环境变量都是本地路径，绝不出�
 // 回归：QMD 的分块路径（chunkDocumentByTokens → getDefaultLlamaCpp → tokenize）走**模块级单例**，
 // 不读 createStore 的 config 而只认 env。不设 env 时它会去解析默认的 hf: 云端模型并在缺失时联网，
 // 实测表现为 embed 阶段无限等待（进程内存不涨、CPU 不动）。这条测试锁死这个修复。
-test('单例环境：运行时把本地模型与禁用位写进进程环境（分块走单例，不读 store config）', async (t) => {
+test('单例环境：运行时把本地模型与禁用位写进进程环境（分块走单例，不读 store config）', { skip: qmdSkip }, async (t) => {
   let closeStore = null
   t.after(async () => { try { await closeStore?.() } catch { /* 句柄已释放 */ } })
 

@@ -129,10 +129,10 @@ test('POST /vault/remove 移除 attached 库；当前落到其余库', async (t)
   assert.ok(!r.json.vaults.some((v) => v.id === target.id))
 })
 
-test('写端点缺 Origin/Referer → 403', async (t) => {
+test('写端点缺 Origin/Referer → 通过同源校验进入业务（p2 补丁；未知 id → 404）', async (t) => {
   const s = setup(t)
   const r = await req(s.handlers, '/api/obsidian-wiki/vault/switch', { method: 'POST', headers: JSON_HDR, body: JSON.stringify({ id: 'whatever' }) })
-  assert.equal(r.status, 403)
+  assert.equal(r.status, 404)
 })
 
 test('单库模式：传 VaultStore 时 /vaults 返回一个库，写端点 404', async (t) => {

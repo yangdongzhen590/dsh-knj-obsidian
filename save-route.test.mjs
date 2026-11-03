@@ -160,7 +160,7 @@ test('POST /page 非 JSON Content-Type → 415', async (t) => {
   assert.equal(r.status, 415)
 })
 
-test('POST /page 无 Origin/Referer → 403（localhost 写面默认拒绝）', async (t) => {
+test('POST /page 无 Origin/Referer → 放行（p2 补丁：宿主连接层代理请求不带这两者）', async (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const { host, handlers } = makeHost()
@@ -169,5 +169,5 @@ test('POST /page 无 Origin/Referer → 403（localhost 写面默认拒绝）', 
   const r = await req(handlers, '/api/obsidian-wiki/page?id=orders&category=projects', {
     method: 'POST', headers: { ...JSON_HDR }, body: JSON.stringify({ raw }),
   })
-  assert.equal(r.status, 403)
+  assert.equal(r.status, 200)
 })

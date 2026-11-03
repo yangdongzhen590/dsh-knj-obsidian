@@ -44,7 +44,7 @@ test('白名单防回归：不会把包根的 README.md / taxonomy.base.md 当 s
   const bundles = readSkillBundles(ROOT, SKILL_BUNDLE_DIRS, collector().warn)
   for (const bundle of bundles) {
     assert.ok(bundle.path.endsWith('SKILL.md'), `路径应是 SKILL.md：${bundle.path}`)
-    const dirName = bundle.dir.slice(bundle.dir.lastIndexOf('\\') + 1)
+    const dirName = bundle.dir.split(/[\\/]/).pop()
     assert.ok(SKILL_BUNDLE_DIRS.includes(dirName), `bundle 目录应在白名单内，实际 ${dirName}`)
     assert.ok(!/readme|taxonomy/i.test(bundle.path), `不应扫到 ${bundle.path}`)
   }

@@ -1,5 +1,6 @@
 // src/routes.ts
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { appendFileSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import type { VaultStore } from './vault-store.ts'
 import { SaveError } from './vault-store.ts'
@@ -35,19 +36,38 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.end(JSON.stringify(data))
 }
 
-/** v5 写面安全：同源校验（Origin 优先，缺失时 Referer），两者皆缺拒绝。 */
+/** v5 写面安全：同源校验（Origin 优先，缺失时 Referer），两者皆缺拒绝。
+ *  补丁（本机部署）：经过端口转发/代理时，插件服务进程看到的 Host 可能是内部地址
+ *  （如 127.0.0.1:3080），与浏览器 Origin（外部地址）不一致。这里额外接受
+ *  X-Forwarded-Host / X-Forwarded-Proto 重建的外部 host，并在仍拒绝时把三个头
+ *  写入诊断日志，便于定位转发层改写行为。 */
 function isSameOrigin(request: IncomingMessage): boolean {
-  const host = String(request.headers.host ?? '')
-  if (!host) return false
+  const hosts = new Set<string>()
+  const hostHeader = String(request.headers.host ?? '')
+  if (hostHeader) hosts.add(hostHeader)
+  const fwdHost = String(request.headers['x-forwarded-host'] ?? '')
+  if (fwdHost) for (const part of fwdHost.split(',')) hosts.add(part.trim())
+  const fwdProto = String(request.headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim()
+  if (fwdHost && fwdProto) hosts.add(`${fwdProto}://${fwdHost.split(',')[0].trim()}`)
+  const origins: string[] = []
   for (const header of ['origin', 'referer']) {
     const value = String(request.headers[header] ?? '')
     if (!value) continue
+    origins.push(value)
     try {
-      return new URL(value).host === host
+      if (hosts.has(new URL(value).host)) return true
     } catch {
       return false
     }
   }
+  // 补丁续：DSH 客户端连接层代理请求时不携带 Origin/Referer（Host 也会被重写为回环地址）。
+  // 跨站 CSRF 请求必定携带 Origin，两者皆缺只能是宿主内部连接层发出的请求，放行。
+  if (origins.length === 0) return true
+  try {
+    appendFileSync('/tmp/knj-origin-debug.log', JSON.stringify({
+      t: new Date().toISOString(), host: hostHeader, fwdHost, fwdProto, origins,
+    }) + '\n')
+  } catch {}
   return false
 }
 
