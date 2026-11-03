@@ -5901,6 +5901,44 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				})]
 			});
 		}
+		// src/client/clipboard.ts
+		/**
+		* 剪贴板写入，带降级链：
+		* 1) navigator.clipboard.writeText（仅在 secure context 可用——loopback 或 https；
+		*    局域网 IP + http 下该 API 整个是 undefined）
+		* 2) 隐藏 textarea + document.execCommand('copy')（同步兜底，非 secure context 也可用）
+		* 返回是否真的写成功，调用方据此如实提示，不许在失败时谎报「已复制」。
+		*/
+		async function copyToClipboard(text) {
+			try {
+				if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+					await navigator.clipboard.writeText(text);
+					return true;
+				}
+			} catch {}
+			try {
+				if (typeof document === "undefined") return false;
+				const ta = document.createElement("textarea");
+				ta.value = text;
+				ta.setAttribute("readonly", "");
+				ta.style.position = "fixed";
+				ta.style.top = "-1000px";
+				ta.style.opacity = "0";
+				document.body.appendChild(ta);
+				ta.select();
+				ta.setSelectionRange(0, text.length);
+				let ok = false;
+				try {
+					ok = document.execCommand("copy");
+				} catch {
+					ok = false;
+				}
+				document.body.removeChild(ta);
+				return ok;
+			} catch {
+				return false;
+			}
+		}
 		// src/client/SemanticIndexPanel.tsx
 		/** 状态词 → 面向用户的短句（不把内部枚举直接抛给用户）。 */
 		const STATE_LABEL = {
@@ -6299,10 +6337,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					message: "宿主未提供新建会话能力"
 				};
 				if (!res.ok) {
-					try {
-						await navigator.clipboard.writeText(text);
-					} catch {}
-					setMessage(`无法新建会话（${res.message ?? "未知原因"}）：触发指令已复制到剪贴板，请粘贴到对话发送给 Agent。`);
+					const copied = await copyToClipboard(text);
+					setMessage(copied ? `无法新建会话（${res.message ?? "未知原因"}）：触发指令已复制到剪贴板，请粘贴到对话发送给 Agent。` : `无法新建会话（${res.message ?? "未知原因"}），且剪贴板写入失败（非安全上下文）。请从下方文本框手动选择并复制触发指令。`);
 					return;
 				}
 				setMessage(res.message ? `${okText}（注意：${res.message}）` : okText);
@@ -6327,10 +6363,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				if (scope === "sessions") text = effectiveIds.length > 0 ? buildSelectedSessionsTrigger(effectiveIds, vaultRoot) : buildDistillTrigger(range, vaultRoot);
 				else text = buildCollectTrigger(scope);
 				if (copyOnly) {
-					try {
-						await navigator.clipboard.writeText(text);
-					} catch {}
-					setMessage("触发指令已复制到剪贴板，请粘贴到对话发送给 Agent（未创建新会话）。");
+					const copied = await copyToClipboard(text);
+					setMessage(copied ? "触发指令已复制到剪贴板，请粘贴到对话发送给 Agent（未创建新会话）。" : "剪贴板写入失败（非安全上下文）：请从下方文本框手动选择并复制触发指令（未创建新会话）。");
 					return;
 				}
 				await send(text, scope === "sessions" ? "已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-distill 蒸馏并入库。" : "已新建会话并预填指令：切到该新会话后回车发送，Agent 会用 wiki-collect 采集并直接入库。");
@@ -6835,10 +6869,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					message: "宿主未提供新建会话能力"
 				};
 				if (!res.ok) {
-					try {
-						await navigator.clipboard.writeText(text);
-					} catch {}
-					flash(`无法新建会话（${res.message ?? "未知原因"}）：初始化指令已复制，请粘贴到对话发送给 Agent`, "err");
+					const copied = await copyToClipboard(text);
+					flash(copied ? `无法新建会话（${res.message ?? "未知原因"}）：初始化指令已复制，请粘贴到对话发送给 Agent` : `无法新建会话（${res.message ?? "未知原因"}），且剪贴板写入失败（非安全上下文），请手动复制初始化指令`, "err");
 					return;
 				}
 				flash(res.message ? `已新建会话并预填初始化指令，但请注意：${res.message}` : "已新建会话并预填初始化指令：切到该新会话后回车发送，Agent 会用 wiki_init 建库");
@@ -7161,13 +7193,10 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				if (id) onNavigate(id);
 			};
 			const copy = async () => {
-				try {
-					await navigator.clipboard.writeText(raw);
+				if (await copyToClipboard(raw)) {
 					setCopied(true);
 					setTimeout(() => setCopied(false), 1500);
-				} catch {
-					setNotice("复制失败：浏览器剪贴板不可用");
-				}
+				} else setNotice("复制失败：浏览器剪贴板不可用（非安全上下文），请手动选择文本复制");
 			};
 			const save = async () => {
 				setSaving(true);
@@ -7898,7 +7927,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						}
 						if (!newId) return fail("sessions.create returned no id");
 						try {
-							sessions.open?.(newId);
+							await sessions.open?.(newId);
 						} catch (e) {
 							return fail(`sessions.open threw: ${String(e)}`);
 						}

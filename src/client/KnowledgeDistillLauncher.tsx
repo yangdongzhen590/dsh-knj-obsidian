@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchCheckpoints, fetchVaults, restoreCheckpoint, type CheckpointMeta } from './api.ts'
 import { IconCopy, IconSparkles } from './icons.tsx'
+import { copyToClipboard } from './clipboard.ts'
 import { SemanticIndexPanel } from './SemanticIndexPanel.tsx'
 
 /** 蒸馏范围：代码侧（enum/db）走 wiki-collect；capability=系统功能挖掘（预留：3 skill 组合）；
@@ -279,8 +280,10 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
       ? await startAgentSession(text, vaultRoot)
       : { ok: false, message: '宿主未提供新建会话能力' }
     if (!res.ok) {
-      try { await navigator.clipboard.writeText(text) } catch { /* 指令仍可在下方复制 */ }
-      setMessage(`无法新建会话（${res.message ?? '未知原因'}）：触发指令已复制到剪贴板，请粘贴到对话发送给 Agent。`)
+      const copied = await copyToClipboard(text)
+      setMessage(copied
+        ? `无法新建会话（${res.message ?? '未知原因'}）：触发指令已复制到剪贴板，请粘贴到对话发送给 Agent。`
+        : `无法新建会话（${res.message ?? '未知原因'}），且剪贴板写入失败（非安全上下文）。请从下方文本框手动选择并复制触发指令。`)
       return
     }
     setMessage(res.message ? `${okText}（注意：${res.message}）` : okText)
@@ -316,8 +319,10 @@ export function KnowledgeDistillLauncher({ startAgentSession, sessions, workspac
       text = buildCollectTrigger(scope)
     }
     if (copyOnly) {
-      try { await navigator.clipboard.writeText(text) } catch { /* 展示兜底文本 */ }
-      setMessage('触发指令已复制到剪贴板，请粘贴到对话发送给 Agent（未创建新会话）。')
+      const copied = await copyToClipboard(text)
+      setMessage(copied
+        ? '触发指令已复制到剪贴板，请粘贴到对话发送给 Agent（未创建新会话）。'
+        : '剪贴板写入失败（非安全上下文）：请从下方文本框手动选择并复制触发指令（未创建新会话）。')
       return
     }
     const okText = scope === 'sessions'

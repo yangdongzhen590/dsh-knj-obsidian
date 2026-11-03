@@ -187,7 +187,7 @@ export function apply(ctx: ClientContext): void {
           newId = await sessions.create(workspace ? { workspaceId: workspace.id, cwd } : (cwd ? { cwd } : {}))
         } catch (e) { return fail(`sessions.create threw: ${String(e)}`) }
         if (!newId) return fail('sessions.create returned no id')
-        try { sessions.open?.(newId) } catch (e) { return fail(`sessions.open threw: ${String(e)}`) }
+        try { await sessions.open?.(newId) } catch (e) { return fail(`sessions.open threw: ${String(e)}`) }
         try { await sessions.refresh?.() } catch { /* 列表刷新失败不影响预填 */ }
 
         // 归属校验：优先比对「会话挂在工作区下」（sessionIds），再退回 cwd 比对；拿不到实际值时不误报

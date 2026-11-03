@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 import { renderMarkdown } from './markdown.ts'
 import { fetchRawPage, saveRawPage } from './api.ts'
 import { IconCheck, IconCopy, IconInfo, IconWarning } from './icons.tsx'
+import { copyToClipboard } from './clipboard.ts'
 
 export interface NoteRef {
   id: string
@@ -65,12 +66,12 @@ export function NoteView({
   }
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(raw)
+    const ok = await copyToClipboard(raw)
+    if (ok) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch {
-      setNotice('复制失败：浏览器剪贴板不可用')
+    } else {
+      setNotice('复制失败：浏览器剪贴板不可用（非安全上下文），请手动选择文本复制')
     }
   }
 

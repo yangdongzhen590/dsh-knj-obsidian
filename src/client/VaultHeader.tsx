@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import { activateVault, attachVault, fetchVaults, removeVault, switchVault } from './api.ts'
 import type { VaultInfo, VaultListEntry } from './api.ts'
 import { IconBook, IconChevronDown, IconGear, IconPlus, IconRefresh, IconTrash } from './icons.tsx'
+import { copyToClipboard } from './clipboard.ts'
 
 /** 客户端工作区服务的最小结构面（宿主 dsh-client-runtime 提供；缺失时仅手动切换）。 */
 export interface WorkspaceFace {
@@ -168,8 +169,10 @@ export function VaultHeader({ workspaces, sessions, startAgentSession, onVaultCh
       ? await startAgentSession(text, current?.root)
       : { ok: false, message: '宿主未提供新建会话能力' }
     if (!res.ok) {
-      try { await navigator.clipboard.writeText(text) } catch { /* 提示里给出降级说明 */ }
-      flash(`无法新建会话（${res.message ?? '未知原因'}）：初始化指令已复制，请粘贴到对话发送给 Agent`, 'err')
+      const copied = await copyToClipboard(text)
+      flash(copied
+        ? `无法新建会话（${res.message ?? '未知原因'}）：初始化指令已复制，请粘贴到对话发送给 Agent`
+        : `无法新建会话（${res.message ?? '未知原因'}），且剪贴板写入失败（非安全上下文），请手动复制初始化指令`, 'err')
       return
     }
     flash(res.message
