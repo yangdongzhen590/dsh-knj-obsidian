@@ -11,7 +11,7 @@ import type { RetrievalOptions, RetrievalResult, SemanticPageHit } from './retri
 import { expandMainCandidates } from './subvault.ts'
 import { recordQueryMiss, missLogEnabled } from './miss-log.ts'
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { buildGraph, exportGraphHtml } from './graph-engine.ts'
 import { mineEnums, mineTables } from './code-miner.ts'
 import { readProgress, markModule, pendingModules, progressFileFor } from './mining-progress.ts'
@@ -215,16 +215,41 @@ function sessionWriteStore(provider: VaultProvider, exec: unknown): VaultStore |
   return currentStore(provider)
 }
 
+/** root 是否等于 target 或是它的祖先（Windows 大小写不敏感，沿目录链上溯比较）。 */
+function isInsideOrSame(target: string, root: string): boolean {
+  let cur = target
+  for (let i = 0; i < 64; i += 1) {
+    if (cur.toLowerCase() === root.toLowerCase()) return true
+    const parent = dirname(cur)
+    if (parent === cur) return false
+    cur = parent
+  }
+  return false
+}
+
 /**
  * 会话工作区的「工作区根」：取注册表里是 cwd 祖先的最深已注册根（会话 cwd 常是
  * 工作区子目录）；没有祖先命中时就是 cwd 本身（wiki_init 在新工作区建库的落点）。
+ *
+ * **主库根不算**（评审 2026-11-05 P1-2）：`readonlyVaultForRoot` 对主库根返回 undefined，
+ * 若这里把主库根当落点，wiki_init 会把库建到 `~/.dsh` 上、回执说「已存在（幂等）」，
+ * 而此后每次读取都报「本工作区没有知识库」——两个口径必须一致。
+ *
+ * **主库根还是硬边界**（2026-11-05 追加）：读路径的 `nearestVaultRoot` 一旦遇到主库根的
+ * `.wiki` 就返回 undefined，**不会再向上找**；所以 cwd 落在主库根内部时也不能越过它去绑定
+ * 更外层的祖先库（真实形状：`~/.dsh/skills/x` 会越过 `~/.dsh` 绑到 `~` 的遗留库，回执说
+ * 「已存在 8 页」，而同一 cwd 的读解析仍是 null）。这种情况就在 cwd 自己建库。
  */
 function workspaceRootFor(provider: VaultProvider, cwd: string): string {
   const target = resolve(cwd)
+  const mainRaw = (provider as VaultProvider & { mainVault?: () => { root: string } | undefined }).mainVault?.()?.root
+  const mainRoot = mainRaw ? resolve(mainRaw) : ''
+  if (mainRoot && isInsideOrSame(target, mainRoot)) return target
   let best = ''
   try {
     for (const v of provider.listVaults()) {
       const root = resolve(v.root)
+      if (mainRoot && root === mainRoot) continue
       if (target === root || target.startsWith(root + '\\') || target.startsWith(root + '/')) {
         if (root.length > best.length) best = root
       }
@@ -1255,6 +1280,7 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
         const p = provider as VaultProvider & {
           readonlyVaultForRoot?: (root: string) => { store: unknown } | undefined
           ensureVaultAt?: (root: string) => unknown
+          mainVault?: () => { root: string } | undefined
         }
         let store: VaultStore | undefined
         try {
@@ -1266,6 +1292,14 @@ export function mountTools(ctx: Context, provider: VaultProvider, opts: MountToo
           // 注册但不抢占全局当前库（见 VaultManager.ensureVaultAt）。
           // 注意 existed 必须在 ensureVaultAt **之前**取——它会 ensure 脚手架，先建后查会把首次建库误报成已存在。
           const wsRoot = workspaceRootFor(provider, cwd)
+          // 主库根不是工作区库（评审 2026-11-05 P1-2）：在它上面建库，回执会说「已存在（幂等）」，
+          // 而任何一次读都会报「本工作区没有知识库」——用户会照着回执反复重试，永远不通。
+          const mainRoot = p.mainVault?.()?.root
+          if (mainRoot && resolve(wsRoot) === resolve(mainRoot)) {
+            throw new Error(
+              `主库根（${resolve(mainRoot)}）不是工作区库，不能把库初始化在它上面：请在具体工作区的工程根目录里调用 wiki_init；要写主库请用 target='main'。`,
+            )
+          }
           const existedBefore = existsSync(join(wsRoot, '.wiki'))
           store = p.ensureVaultAt(wsRoot) as VaultStore
           const wikiRoot = store.wikiRoot

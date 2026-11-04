@@ -6919,7 +6919,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			const parts = path.split(/[\\/]/).filter(Boolean);
 			return parts[parts.length - 1] ?? path;
 		}
-		function VaultHeader({ root, workspaces, startAgentSession, onVaultChanged }) {
+		function VaultHeader({ root, overrideRoot, onOverrideRoot, workspaces, startAgentSession, onVaultChanged }) {
 			const [current, setCurrent] = (0, react.useState)(null);
 			const [vaults, setVaults] = (0, react.useState)([]);
 			const [main, setMain] = (0, react.useState)(null);
@@ -6929,8 +6929,6 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			const [formPath, setFormPath] = (0, react.useState)("");
 			const [formName, setFormName] = (0, react.useState)("");
 			const [busy, setBusy] = (0, react.useState)(false);
-			/** 本面板的临时库覆盖（下拉切换）；不写全局 currentVaultId。 */
-			const [overrideRoot, setOverrideRoot] = (0, react.useState)(void 0);
 			const effectiveRoot = overrideRoot ?? root;
 			const flash = (text, kind = "ok") => {
 				setNotice({
@@ -6951,9 +6949,6 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				}
 			};
 			(0, react.useEffect)(() => {
-				setOverrideRoot(void 0);
-			}, [root]);
-			(0, react.useEffect)(() => {
 				setCurrent(null);
 				setUninitialized(false);
 				load().catch(() => {});
@@ -6962,7 +6957,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				if (!id || id === current?.id) return;
 				const target = vaults.find((v) => v.id === id);
 				if (!target) return;
-				setOverrideRoot(target.root);
+				onOverrideRoot?.(target.root);
 				onVaultChanged();
 			};
 			const doAttach = async () => {
@@ -6978,7 +6973,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					setFormPath("");
 					setFormName("");
 					flash(`已挂接/新建：${r.current?.name ?? path}`);
-					setOverrideRoot(path);
+					onOverrideRoot?.(path);
 					onVaultChanged();
 				} catch (e) {
 					flash(`挂接失败：${e instanceof Error ? e.message : String(e)}`, "err");
@@ -7018,7 +7013,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				try {
 					await removeVault(current.id);
 					flash(`已移除「${current.name}」`);
-					setOverrideRoot(void 0);
+					onOverrideRoot?.(void 0);
 					onVaultChanged();
 				} catch (e) {
 					flash(`移除失败：${e instanceof Error ? e.message : String(e)}`, "err");
@@ -7081,7 +7076,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 										doInitMain().catch(() => {});
 										return;
 									}
-									setOverrideRoot(main.root);
+									onOverrideRoot?.(main.root);
 									onVaultChanged();
 								},
 								children: ["主库", main.initialized ? ` · ${main.pageCount} 页` : " · 未初始化"]
@@ -7106,7 +7101,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 								disabled: busy,
 								title: `本面板临时切到了别的库；点此回到当前工作区（${root}）`,
 								onClick: () => {
-									setOverrideRoot(void 0);
+									onOverrideRoot?.(void 0);
 									onVaultChanged();
 								},
 								children: "跟随工作区"
@@ -7243,23 +7238,37 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				workspaceTick
 			]);
 			/** v7：库切换后清掉旧库的搜索结果、刷新树/lint、重挂载图谱。 */
+			/**
+			* 面板级库覆盖（评审 2026-11-05 P1-1）。**必须住在这里**：VaultHeader 只提供头部
+			* 身份，而树/搜索/图谱/lint/蒸馏都按 effectiveRoot 取数——覆盖留在头部内部时，
+			* 下拉切库只换了徽章，内容区照旧查原库（头部与内容互相矛盾）。
+			*/
+			const [overrideRoot, setOverrideRoot] = (0, react.useState)(void 0);
+			const effectiveRoot = overrideRoot ?? root;
+			(0, react.useEffect)(() => {
+				setOverrideRoot(void 0);
+			}, [root]);
 			const handleVaultChanged = () => {
 				setResults(null);
 				setVaultVersion((v) => v + 1);
-				if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
+				if (typeof window === "undefined") return;
+				window.dispatchEvent(new CustomEvent("wiki:pages-changed"));
+				window.dispatchEvent(new CustomEvent("wiki:vault-changed"));
 			};
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "knj-wiki knj-vcol",
 				children: [
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultHeader, {
 						root,
+						overrideRoot,
+						onOverrideRoot: setOverrideRoot,
 						workspaces,
 						startAgentSession,
 						onVaultChanged: handleVaultChanged
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SearchBox, {
 						onResult: setResults,
-						root
+						root: effectiveRoot
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						style: { padding: "8px 12px 4px" },
@@ -7292,12 +7301,12 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						className: view === "graph" ? "knj-grow knj-graph-host" : "knj-grow knj-scroll",
 						children: view === "graph" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GraphView, {
 							onOpenNote: openNote,
-							root
-						}) }, `${vaultVersion}:${root ?? ""}`) : view === "collect" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(KnowledgeDistillLauncher, {
+							root: effectiveRoot
+						}) }, `${vaultVersion}:${effectiveRoot ?? ""}`) : view === "collect" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(KnowledgeDistillLauncher, {
 							startAgentSession,
 							sessions,
 							workspaces,
-							root
+							root: effectiveRoot
 						}) : results !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: "knj-vcol",
 							children: [
@@ -7371,12 +7380,12 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 							]
 						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(VaultTree, {
 							onOpen: (p) => openNote(p.id, p.category, p.title),
-							root
+							root: effectiveRoot
 						})
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LintPanel, {
 						openNote,
-						root
+						root: effectiveRoot
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "knj-pop__hint",
@@ -7601,7 +7610,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					title: seed.id
 				}]);
 				setBrokenLink(null);
-			}, [seed?.id, seed?.category]);
+			}, [
+				seed?.id,
+				seed?.category,
+				root
+			]);
 			(0, react.useEffect)(() => {
 				if (!stack.length) return;
 				const top = stack[stack.length - 1];

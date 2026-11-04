@@ -19,8 +19,13 @@ export interface VaultManagerOptions {
   registryFile: string
   /** 宿主进程启动目录（cwd 种子，保证「打开就有库」） */
   cwdRoot: string
-  /** 宿主工作区列表（自动发现每个工作区的库） */
-  workspaceRoots?: WorkspaceSeed[]
+  /**
+   * 宿主工作区列表（自动发现每个工作区的库）。
+   *
+   * 也接受取值函数：宿主工作区会在**运行期**新增，构造时的数组快照会把新工作区漏出
+   * 「查找边界」，于是它下面的路径会越过它去命中祖先库（评审 2026-11-05 P1-3）。
+   */
+  workspaceRoots?: WorkspaceSeed[] | (() => WorkspaceSeed[])
   /** 主库项目根（默认 ~/.dsh，即 ~/.dsh/.wiki）；仅在 subVaults 开启时生效 */
   mainRoot?: string
   /** 主库+子库能力开关（默认读 KNJ_OBSIDIAN_SUBVAULTS，off 关闭） */
@@ -75,7 +80,8 @@ export function nearestVaultRoot(from: string, boundaryOf?: ReadonlySet<string>)
 
 export class VaultManager implements VaultProvider {
   private registry: RegistryFile = { version: 1, currentVaultId: null, mainVaultId: null, vaults: [] }
-  private readonly seeds: WorkspaceSeed[]
+  /** 工作区种子来源（数组或取值函数）：每次解析现取，运行期新增的工作区立刻成为边界。 */
+  private readonly seedsOf: () => WorkspaceSeed[]
   /** 主库+子库能力开关（默认读 KNJ_OBSIDIAN_SUBVAULTS；off 时主库完全不参与）。 */
   private readonly subVaultsOn: boolean
   /** 主库项目根（`.wiki` 在其下）。注册≠建库：这里只决定「登记哪个目录」。 */
@@ -84,11 +90,21 @@ export class VaultManager implements VaultProvider {
   private readonly stores = new Map<string, VaultStore>()
 
   constructor(private readonly opts: VaultManagerOptions) {
-    this.seeds = opts.workspaceRoots ?? []
+    const seedsSource = opts.workspaceRoots ?? []
+    this.seedsOf = typeof seedsSource === 'function' ? seedsSource : () => seedsSource
     this.subVaultsOn = opts.subVaults ?? subVaultsEnabled()
     this.mainRoot = resolve(opts.mainRoot ?? defaultMainRoot())
     this.load()
     this.seed()
+  }
+
+  /** 现取工作区种子：宿主可能在运行期新增/移除工作区，快照会让新工作区不是边界。 */
+  private seedsNow(): WorkspaceSeed[] {
+    try {
+      return this.seedsOf() ?? []
+    } catch {
+      return []
+    }
   }
 
   // ---------- 持久化（tmp+rename 原子写；仅内容变化时写盘） ----------
@@ -108,7 +124,7 @@ export class VaultManager implements VaultProvider {
             .map((v) => ({
               id: vaultIdOf(v.root),
               // 名字会原样进 L0 身份块：载入路径也要清洗成单行（评审 R5），空则退回目录名
-              name: sanitizeVaultName(v.name, defaultNameFor(resolve(v.root), this.seeds)),
+              name: sanitizeVaultName(v.name, defaultNameFor(resolve(v.root), this.seedsNow())),
               root: resolve(v.root),
               source: v.source,
               ...(v.role === 'main' || v.role === 'child' ? { role: v.role } : {}),
@@ -149,20 +165,20 @@ export class VaultManager implements VaultProvider {
       if (removed.has(r)) return
       const existing = this.registry.vaults.find((v) => resolve(v.root) === r)
       if (existing) {
-        if (name && !existing.name) existing.name = sanitizeVaultName(name, defaultNameFor(r, this.seeds))
+        if (name && !existing.name) existing.name = sanitizeVaultName(name, defaultNameFor(r, this.seedsNow()))
         if (role) existing.role = role
         return
       }
       this.registry.vaults.push({
         id: vaultIdOf(r),
-        name: sanitizeVaultName(name ?? '', defaultNameFor(r, this.seeds)),
+        name: sanitizeVaultName(name ?? '', defaultNameFor(r, this.seedsNow())),
         root: r,
         source,
         ...(role ? { role } : {}),
       })
     }
     add(this.opts.cwdRoot, 'cwd')
-    for (const w of this.seeds) {
+    for (const w of this.seedsNow()) {
       // 目录已消失的已注册工作区跳过，避免幽灵库
       if (!existsSync(w.path)) continue
       add(w.path, 'workspace')
@@ -316,7 +332,7 @@ export class VaultManager implements VaultProvider {
     const hit = this.registry.vaults.find((v) => resolve(v.root) === nearest)
     return {
       store: this.storeFor(nearest, false),
-      name: hit?.name ?? defaultNameFor(nearest, this.seeds),
+      name: hit?.name ?? defaultNameFor(nearest, this.seedsNow()),
     }
   }
 
@@ -324,12 +340,16 @@ export class VaultManager implements VaultProvider {
   private knownRoots(): Set<string> {
     const roots = new Set<string>()
     roots.add(resolve(this.opts.cwdRoot))
+    // 主库根不是「工作区的库」，但必须是查找的**停止位**：否则主库还没 `.wiki` 时，
+    // 主库之下的 cwd 会越过它、命中更外层的遗留库（本机真实存在 `~/.wiki`）。
+    // 「命中主库」的情况由 readonlyVaultForRoot 里的 isMainRecord 拒绝，不靠这里。
+    if (this.subVaultsOn) roots.add(this.mainRoot)
     for (const v of this.registry.vaults) {
-      // 主库根不做查找边界（评审 R2）：否则 ~/.dsh 之下的任何目录都会"命中主库"。
+      // 主库记录本身不贡献边界（已在上面显式加入 mainRoot，且它的根可能被改址）。
       if (this.isMainRecord(v)) continue
       roots.add(resolve(v.root))
     }
-    for (const s of this.seeds) {
+    for (const s of this.seedsNow()) {
       if (this.isMainRecord(this.registry.vaults.find((v) => resolve(v.root) === resolve(s.path)))) continue
       roots.add(resolve(s.path))
     }
@@ -444,7 +464,7 @@ export class VaultManager implements VaultProvider {
     }
     const existing = this.registry.vaults.find((v) => resolve(v.root) === r)
     // 名字会原样进 L0 身份块：入库前先清洗（评审 R5）。
-    const safeName = name && name.trim() ? sanitizeVaultName(name, defaultNameFor(r, this.seeds)) : undefined
+    const safeName = name && name.trim() ? sanitizeVaultName(name, defaultNameFor(r, this.seedsNow())) : undefined
     if (existing) {
       if (safeName) {
         existing.name = safeName

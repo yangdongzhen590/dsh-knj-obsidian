@@ -57,15 +57,33 @@ export function WikiSidebar({ openNote, workspaces, sessions, startAgentSession,
   )
 
   /** v7：库切换后清掉旧库的搜索结果、刷新树/lint、重挂载图谱。 */
+  /**
+   * 面板级库覆盖（评审 2026-11-05 P1-1）。**必须住在这里**：VaultHeader 只提供头部
+   * 身份，而树/搜索/图谱/lint/蒸馏都按 effectiveRoot 取数——覆盖留在头部内部时，
+   * 下拉切库只换了徽章，内容区照旧查原库（头部与内容互相矛盾）。
+   */
+  const [overrideRoot, setOverrideRoot] = useState<string | undefined>(undefined)
+  const effectiveRoot = overrideRoot ?? root
+
+  // 会话/工作区切换（root 变化）→ 丢弃面板级覆盖，回到「跟随工作区」
+  useEffect(() => {
+    setOverrideRoot(undefined)
+  }, [root])
+
   const handleVaultChanged = () => {
     setResults(null)
     setVaultVersion((v) => v + 1)
-    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('wiki:pages-changed'))
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new CustomEvent('wiki:pages-changed'))
+    // 库身份变了：让监听者清掉**跨库**选择（KnowledgeDistillLauncher 的会话/手工页、
+    // SemanticIndexPanel），否则切库后选中的还是旧库的条目。
+    window.dispatchEvent(new CustomEvent('wiki:vault-changed'))
   }
 
   return <div className="knj-wiki knj-vcol">
-    <VaultHeader root={root} workspaces={workspaces} startAgentSession={startAgentSession} onVaultChanged={handleVaultChanged} />
-    <SearchBox onResult={setResults} root={root} />
+    <VaultHeader root={root} overrideRoot={overrideRoot} onOverrideRoot={setOverrideRoot}
+      workspaces={workspaces} startAgentSession={startAgentSession} onVaultChanged={handleVaultChanged} />
+    <SearchBox onResult={setResults} root={effectiveRoot} />
 
     <div style={{ padding: '8px 12px 4px' }}>
       <div className="knj-seg">
@@ -90,10 +108,10 @@ export function WikiSidebar({ openNote, workspaces, sessions, startAgentSession,
     <div className={view === 'graph' ? 'knj-grow knj-graph-host' : 'knj-grow knj-scroll'}>
       {view === 'graph' ? (
         // key=vaultVersion+root：库/工作区切换后强制重挂载，避免展示旧库图谱
-        <div key={`${vaultVersion}:${root ?? ''}`}><GraphView onOpenNote={openNote} root={root} /></div>
+        <div key={`${vaultVersion}:${effectiveRoot ?? ''}`}><GraphView onOpenNote={openNote} root={effectiveRoot} /></div>
       ) : view === 'collect' ? (
         <KnowledgeDistillLauncher startAgentSession={startAgentSession} sessions={sessions as never}
-          workspaces={workspaces as never} root={root} />
+          workspaces={workspaces as never} root={effectiveRoot} />
       ) : results !== null ? (
         <div className="knj-vcol">
           <div className="knj-result-head">
@@ -126,11 +144,11 @@ export function WikiSidebar({ openNote, workspaces, sessions, startAgentSession,
           <div>无法判断本工作区该用哪个知识库；可在上方下拉里手动选择。</div>
         </div>
       ) : (
-        <VaultTree onOpen={(p) => openNote(p.id, p.category, p.title)} root={root} />
+        <VaultTree onOpen={(p) => openNote(p.id, p.category, p.title)} root={effectiveRoot} />
       )}
     </div>
 
-    <LintPanel openNote={openNote} root={root} />
+    <LintPanel openNote={openNote} root={effectiveRoot} />
     {/* 构建标记：出现「新建会话并预填」的诡异失败时，先靠它确认浏览器跑的是哪一版。 */}
     <div className="knj-pop__hint" style={{ padding: '0 12px 8px', opacity: 0.65 }}
       title="客户端构建标记（确认浏览器加载了哪一次构建）">

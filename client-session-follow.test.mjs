@@ -33,11 +33,16 @@ test('VaultHeader 由 root 驱动（不做全局 activate 跟随）', () => {
   assert.ok(text.includes('fetchVaults(effectiveRoot)'), '库列表应按 effectiveRoot 取')
 })
 
-test('WikiSidebar 用 session-root 纯函数算 root 并下传', () => {
+test('WikiSidebar 用 session-root 纯函数算 root，并把面板覆盖作为 effectiveRoot 下传', () => {
   const text = read('WikiSidebar.tsx')
   assert.ok(text.includes('resolveSessionRoot('), '应使用 src/client/session-root.ts 的解析函数')
   assert.ok(text.includes('sessionId'), '应接收 seat 注入的 sessionId')
-  assert.ok(text.includes('root={root}') || text.includes('root,'), '各视图应收到 root')
+  // 2026-11-05 P1-1：只下传 root 时，下拉「切换知识库」只换头部徽章，内容区照旧查原库。
+  assert.ok(text.includes('const effectiveRoot = overrideRoot ?? root'), '覆盖必须与跟随根合成 effectiveRoot')
+  assert.ok(
+    (text.match(/root=\{effectiveRoot\}/g) ?? []).length >= 5,
+    '树/搜索/图谱/lint/蒸馏五个视图都必须按 effectiveRoot 取数',
+  )
 })
 
 test('index.ts 从 pane-tab seat 取 sessionId/useSessions 并传给面板', () => {

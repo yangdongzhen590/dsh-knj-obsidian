@@ -40,12 +40,14 @@ export function NoteWorkbench({ path, onPagesChanged, root }: { path?: string; o
     return () => { cancelled = true }
   }, [root])
 
-  // 种子页变化（边栏打开另一篇）→ 重置栈
+  // 种子页变化（边栏打开另一篇）→ 重置栈。
+  // root 也必须在依赖里（评审 2026-11-05 P2-3）：切库/换工作区后留着旧栈，
+  // 点「返回」会按旧栈的 id 去**新库**取页——恰好同 id 时就静默打开另一篇。
   useEffect(() => {
     if (!seed) { setStack([]); setBrokenLink(null); return }
     setStack([{ id: seed.id, category: seed.category, title: seed.id }])
     setBrokenLink(null)
-  }, [seed?.id, seed?.category])
+  }, [seed?.id, seed?.category, root])
 
   // 压栈时用索引标题回填
   useEffect(() => {

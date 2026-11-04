@@ -53,9 +53,17 @@ function shortDir(path: string): string {
   return parts[parts.length - 1] ?? path
 }
 
-export function VaultHeader({ root, workspaces, startAgentSession, onVaultChanged }: {
+export function VaultHeader({ root, overrideRoot, onOverrideRoot, workspaces, startAgentSession, onVaultChanged }: {
   /** 当前会话所属工作区根（undefined = 宿主没给会话上下文，退回全局当前库）。 */
   root?: string
+  /**
+   * 面板级库覆盖（**受控**，由 WikiSidebar 持有）。下拉「切换知识库」只影响本面板、
+   * 不写全局 currentVaultId；但它必须住在 WikiSidebar —— 内容区（树/搜索/图谱/lint/
+   * 蒸馏）也按它取数，留在本组件里就传不出去（评审 2026-11-05 P1-1）。
+   */
+  overrideRoot?: string
+  /** 请求改变面板级覆盖（undefined = 回到「跟随工作区」）。 */
+  onOverrideRoot?: (root: string | undefined) => void
   workspaces?: WorkspaceFace
   /** v11：新建会话并预填指令（ok=false 时 message 为失败原因）；用于「初始化知识库」触发 agent。 */
   startAgentSession?: (instruction: string, cwd?: string) => Promise<{ ok: boolean; message?: string }>
@@ -70,9 +78,6 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
   const [formPath, setFormPath] = useState('')
   const [formName, setFormName] = useState('')
   const [busy, setBusy] = useState(false)
-  /** 本面板的临时库覆盖（下拉切换）；不写全局 currentVaultId。 */
-  const [overrideRoot, setOverrideRoot] = useState<string | undefined>(undefined)
-
   const effectiveRoot = overrideRoot ?? root
 
   const flash = (text: string, kind: 'ok' | 'err' = 'ok') => {
@@ -92,12 +97,8 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
     }
   }
 
-  // 会话切换（root 变化）→ 丢弃面板级覆盖，重新按新工作区取库
-  useEffect(() => {
-    setOverrideRoot(undefined)
-  }, [root])
-
-  // 跟随目标变化（root / 本面板覆盖）→ 重新解析库身份
+  // 跟随目标变化（root / 本面板覆盖）→ 重新解析库身份。
+  // 「会话切换即丢弃覆盖」不在这里做：覆盖状态住在 WikiSidebar。
   useEffect(() => {
     setCurrent(null)
     setUninitialized(false)
@@ -109,7 +110,7 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
     if (!id || id === current?.id) return
     const target = vaults.find((v) => v.id === id)
     if (!target) return
-    setOverrideRoot(target.root)
+    onOverrideRoot?.(target.root)
     onVaultChanged()
   }
 
@@ -123,7 +124,7 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
       setFormPath('')
       setFormName('')
       flash(`已挂接/新建：${r.current?.name ?? path}`)
-      setOverrideRoot(path)
+      onOverrideRoot?.(path)
       onVaultChanged()
     } catch (e) {
       flash(`挂接失败：${e instanceof Error ? e.message : String(e)}`, 'err')
@@ -160,7 +161,7 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
     try {
       await removeVault(current.id)
       flash(`已移除「${current.name}」`)
-      setOverrideRoot(undefined)
+      onOverrideRoot?.(undefined)
       onVaultChanged()
     } catch (e) {
       flash(`移除失败：${e instanceof Error ? e.message : String(e)}`, 'err')
@@ -208,7 +209,7 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
           title={main.initialized
             ? `主库：${main.root}（跨项目通用知识；子库候选不足时检索会自动补主库）`
             : `主库还没有 .wiki：${main.root}（点此把初始化交给 Agent）`}
-          onClick={() => { if (mainActive) return; if (!main.initialized) { doInitMain().catch(() => {}); return } setOverrideRoot(main.root); onVaultChanged() }}>
+          onClick={() => { if (mainActive) return; if (!main.initialized) { doInitMain().catch(() => {}); return } onOverrideRoot?.(main.root); onVaultChanged() }}>
           主库{main.initialized ? ` · ${main.pageCount} 页` : ' · 未初始化'}
         </button>
       )}
@@ -225,7 +226,7 @@ export function VaultHeader({ root, workspaces, startAgentSession, onVaultChange
       {followedByWorkspace && (
         <button type='button' className="knj-btn knj-btn--sm" disabled={busy}
           title={`本面板临时切到了别的库；点此回到当前工作区（${root}）`}
-          onClick={() => { setOverrideRoot(undefined); onVaultChanged() }}>
+          onClick={() => { onOverrideRoot?.(undefined); onVaultChanged() }}>
           跟随工作区
         </button>
       )}

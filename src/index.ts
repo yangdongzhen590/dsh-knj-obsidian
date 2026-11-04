@@ -54,20 +54,24 @@ export function apply(ctx: Context, config?: Config): void {
   // tools/webServer 由官方 base bundles 保证提供，是安全的核心依赖。
   ctx.inject(['tools', 'webServer'], (hostCtx: Context) => {
     const host = hostCtx as unknown as WikiHost
-    // 防御性读取 workspaceRegistry：注入后容忍服务异常/缺失，失败仅回退 cwd 单库
-    let workspaceRoots: Array<{ path: string; title?: string }> = []
-    try {
-      const withGet = hostCtx as unknown as { workspaceRegistry?: WorkspaceRegistryLike; get?: (name: string) => unknown }
-      const registry = withGet.workspaceRegistry
-        ?? (typeof withGet.get === 'function' ? withGet.get('workspaceRegistry') as WorkspaceRegistryLike | undefined : undefined)
-      workspaceRoots = registry?.list() ?? []
-    } catch {
-      // 宿主未提供 workspaceRegistry：仅 cwd 种子，不阻塞启动
+    // 防御性读取 workspaceRegistry：注入后容忍服务异常/缺失，失败仅回退 cwd 单库。
+    // 传**取值函数**而不是数组快照：宿主工作区会在运行期新增，快照之外的新工作区不是
+    // 查找边界，它下面的 cwd 会越过它命中祖先库（评审 2026-11-05 P1-3）。
+    const workspaceSeeds = (): Array<{ path: string; title?: string }> => {
+      try {
+        const withGet = hostCtx as unknown as { workspaceRegistry?: WorkspaceRegistryLike; get?: (name: string) => unknown }
+        const registry = withGet.workspaceRegistry
+          ?? (typeof withGet.get === 'function' ? withGet.get('workspaceRegistry') as WorkspaceRegistryLike | undefined : undefined)
+        return registry?.list() ?? []
+      } catch {
+        // 宿主未提供 workspaceRegistry：仅 cwd 种子，不阻塞启动
+        return []
+      }
     }
     const manager = new VaultManager({
       registryFile: config?.vaultRegistryFile ?? defaultRegistryPath(),
       cwdRoot: process.cwd(),
-      workspaceRoots,
+      workspaceRoots: workspaceSeeds,
     })
     const disposeTools = mountTools(hostCtx, manager)
     const disposeRoutes = mountWikiRoutes(host, manager)
