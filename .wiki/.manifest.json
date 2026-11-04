@@ -87,6 +87,13 @@
       "pages_produced": [
         "npm-peer依赖rc版本区间的元组规则"
       ]
+    },
+    "agent:capture": {
+      "content_hash": "af99daa80d157c17813e776e63dcd23fcf201a4f2e742b42c3f44d44e61b1cae",
+      "last_ingested": "2026-11-04T17:29:10.469Z",
+      "pages_produced": [
+        "主库-子库模型-一个主库-n-个工作区子库"
+      ]
     }
   }
 }

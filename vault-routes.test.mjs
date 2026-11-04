@@ -63,8 +63,7 @@ function setup(t, workspaceNames = []) {
   mkdirSync(cwd, { recursive: true })
   const ws = workspaceNames.map((n) => join(dir, n))
   for (const w of ws) mkdirSync(w, { recursive: true })
-  // 既有路由语义用例：关闭主库能力（主库相关路由行为见 subvault.test.mjs）
-  const manager = new VaultManager({ registryFile: reg, cwdRoot: cwd, workspaceRoots: ws.map((p) => ({ path: p })), subVaults: false })
+  const manager = new VaultManager({ registryFile: reg, cwdRoot: cwd, workspaceRoots: ws.map((p) => ({ path: p })) })
   const { host, handlers } = makeHost()
   mountWikiRoutes(host, manager)
   t.after(() => rmSync(dir, { recursive: true, force: true }))

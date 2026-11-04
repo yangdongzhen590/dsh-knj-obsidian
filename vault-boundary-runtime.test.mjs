@@ -33,7 +33,6 @@ test('运行期新增的工作区必须成为查找边界（否则静默绑到�
       registryFile: join(dir, 'vaults.json'),
       cwdRoot,
       workspaceRoots: () => roots, // 动态边界：每次解析都问一次宿主
-      subVaults: false,
     })
   } catch (err) {
     manager = undefined

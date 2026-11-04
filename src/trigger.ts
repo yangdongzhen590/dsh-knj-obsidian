@@ -20,7 +20,6 @@ import { join, resolve } from 'node:path'
 import type { VaultStore } from './vault-store.ts'
 import type { WikiCategory, WikiPage } from './types.ts'
 import { semanticRawHits, semanticFallbackEnabled, toCandidateHints, warmSemanticRuntime } from './semantic-hits.ts'
-import { mainVaultExposed } from './subvault.ts'
 
 export interface TriggerCandidate {
   id: string
@@ -519,8 +518,8 @@ function argsTextOf(event: SessionEventLike): string {
   }
 }
 
-/** 参数可能是宿主已解析的冻结对象，也可能是会话日志里的 JSON 字符串——两种都要认。 */
-function parsedArgsValue(raw: unknown): Record<string, unknown> {
+function parsedArgsOf(event: SessionEventLike): Record<string, unknown> {
+  const raw = event.data?.arguments
   if (raw === undefined || raw === null) return {}
   if (typeof raw === 'object') return raw as Record<string, unknown>
   if (typeof raw !== 'string') return {}
@@ -530,10 +529,6 @@ function parsedArgsValue(raw: unknown): Record<string, unknown> {
   } catch {
     return {}
   }
-}
-
-function parsedArgsOf(event: SessionEventLike): Record<string, unknown> {
-  return parsedArgsValue(event.data?.arguments)
 }
 
 function pathOf(event: { data?: { name?: string; arguments?: unknown } }): string {
@@ -1294,18 +1289,11 @@ export function vaultIdentityEnabled(env: Record<string, string | undefined> = p
  * L0 身份块文案：只给「库在哪、有几页、索引在哪」——让模型知道库存在且可查，
  * 不再把一次空结果误读成「这个库没用」。
  */
-export function renderVaultIdentity(
-  input: { name: string; root: string; pageCount: number; indexPath: string },
-  main?: { name: string; pageCount: number },
-): string {
-  // 库名会原样进提示（评审 R5）：注册入口已清洗，这里再兜一层——旧注册表/手改文件里的
-  // 换行能凭空造出一条伪造的 `[系统]` 行，污染**所有项目**的会话。
-  const oneLine = (s: string): string => s.replace(/[\r\n]+/g, ' ')
+export function renderVaultIdentity(input: { name: string; root: string; pageCount: number; indexPath: string }): string {
   return [
-    `[知识库] 本工作区的知识库：${oneLine(input.name)}（${input.pageCount} 页）`,
-    `根目录：${oneLine(input.root)}`,
-    `索引：${oneLine(input.indexPath)}`,
-    ...(main ? [`主库：${oneLine(main.name)}（${main.pageCount} 页，跨项目通用知识；子库候选不足时会自动补主库命中）`] : []),
+    `[知识库] 本工作区的知识库：${input.name}（${input.pageCount} 页）`,
+    `根目录：${input.root}`,
+    `索引：${input.indexPath}`,
     '需要既有结论或踩过的坑时，可 wiki_query（词面）/ wiki_search_semantic（语义）/ wiki_read（读整页）检索。',
   ].join('\n')
 }
@@ -1337,37 +1325,6 @@ export interface VaultProviderLike {
   /** 注册表里按根查库（用于拿展示名）。 */
   recordForRoot?: (root: string) => { name: string } | undefined
   listVaults?: () => Array<{ root: string; name: string }>
-  /** 主库（主库+子库模型）：undefined=开关关闭或未注册；initialized=false 表示还没建 .wiki。 */
-  mainVault?: () => {
-    name: string
-    root: string
-    initialized: boolean
-    store: { listPagesReadonly(): unknown[] }
-  } | undefined
-}
-
-/**
- * L0 里的主库行（2026-11-01 方案 A）：默认**不注入**，`KNJ_OBSIDIAN_MAIN_UI=on` 且主库已初始化才给。
- *
- * 抽成纯函数是为了让门控能被单测钉住 —— 原来它是内联 IIFE，门控写错只能靠端到端发现。
- * 失败一律静默（L0 不得影响主流程）。
- *
- * @param provider - 只读依赖面（`mainVault` 可缺省）
- * @param env - 环境变量（默认 process.env；测试注入用）
- * @returns 主库行；不该注入时 undefined
- */
-export function mainLineForL0(
-  provider: Pick<VaultProviderLike, 'mainVault'>,
-  env: Record<string, string | undefined> = process.env,
-): { name: string; pageCount: number } | undefined {
-  if (!mainVaultExposed(env)) return undefined
-  try {
-    const m = provider.mainVault?.()
-    if (!m || !m.initialized) return undefined
-    return { name: m.name, pageCount: m.store.listPagesReadonly().length }
-  } catch {
-    return undefined
-  }
 }
 
 /**
@@ -1603,10 +1560,8 @@ export function installTrigger(
       if (hasNoticeWithPrefix(events, VAULT_IDENTITY_SUMMARY)) return
       const resolved = resolveSessionVault(provider, sessionCwdOf(agent!.session))
       if (!resolved || resolved.identity.pageCount === 0) return
-      // 主库身份（主库+子库模型）：默认不注入；`KNJ_OBSIDIAN_MAIN_UI=on` 且已初始化才多给一行。
-      const main = mainLineForL0(provider)
       agent!.inject?.(await createNotice(
-        renderVaultIdentity(resolved.identity, main),
+        renderVaultIdentity(resolved.identity),
         renderVaultIdentitySummary(resolved.identity),
       ))
     } catch {
@@ -1827,14 +1782,8 @@ export function installTrigger(
     const mode = writeGateModeOf()
     if (mode === 'off') return undefined
     if (!VAULT_WRITE_TOOL_NAMES.has(exec.name ?? '')) return undefined
-    // 显式写主库同样算"写进库"（评审 R11）：没有会话 cwd 时 currentVault 是 undefined，
-    // 旧实现直接放行，于是 `wiki_ingest{target:'main'}` 绕过了用户授权。
-    // 宿主形状：`exec.arguments` 是**已解析并深冻结的对象**（dsh-tools 先 snapshotJsonValue
-    // → deepFreeze(detached)，再 waterfall("tools/pre-execute")）；字符串只出现在会话日志的
-    // event.data.arguments 上。两个平面不能混，所以统一走 parsedArgsValue 双向兜底。
-    const explicitMain = exec.name === 'wiki_ingest' && parsedArgsValue(exec.arguments).target === 'main'
     const store = currentVault(exec.agent?.session)
-    if (!store && !explicitMain) return undefined // 没有库的会话：没有"写进库"这回事
+    if (!store) return undefined // 没有库的会话：没有"写进库"这回事
     const session = exec.agent?.session
     const state = stateOf(session)
     if (state.writeAuthorized) return undefined

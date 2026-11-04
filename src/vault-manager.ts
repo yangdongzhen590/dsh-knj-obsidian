@@ -5,7 +5,6 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { basename, dirname, join, resolve } from 'node:path'
 import { VaultStore } from './vault-store.ts'
 import { vaultIdOf } from './types.ts'
-import { MAIN_VAULT_NAME, defaultMainRoot, sanitizeVaultName, subVaultsEnabled } from './subvault.ts'
 import type { VaultListEntry, VaultProvider, VaultRecord } from './types.ts'
 
 /** 宿主工作区种子（path=工作区根目录，title=展示名） */
@@ -19,24 +18,13 @@ export interface VaultManagerOptions {
   registryFile: string
   /** 宿主进程启动目录（cwd 种子，保证「打开就有库」） */
   cwdRoot: string
-  /**
-   * 宿主工作区列表（自动发现每个工作区的库）。
-   *
-   * 也接受取值函数：宿主工作区会在**运行期**新增，构造时的数组快照会把新工作区漏出
-   * 「查找边界」，于是它下面的路径会越过它去命中祖先库（评审 2026-11-05 P1-3）。
-   */
+  /** 宿主工作区列表（自动发现每个工作区的库）。 */
   workspaceRoots?: WorkspaceSeed[] | (() => WorkspaceSeed[])
-  /** 主库项目根（默认 ~/.dsh，即 ~/.dsh/.wiki）；仅在 subVaults 开启时生效 */
-  mainRoot?: string
-  /** 主库+子库能力开关（默认读 KNJ_OBSIDIAN_SUBVAULTS，off 关闭） */
-  subVaults?: boolean
 }
 
 interface RegistryFile {
   version: 1
   currentVaultId: string | null
-  /** 本机唯一主库的 vault id（2026-10-25；缺省=无主库，旧注册表兼容） */
-  mainVaultId?: string | null
   vaults: VaultRecord[]
   /** 用户显式移除过的库根目录（resolve 后）：种子每次启动都会重加，必须记住移除决定 */
   removedRoots?: string[]
@@ -79,26 +67,23 @@ export function nearestVaultRoot(from: string, boundaryOf?: ReadonlySet<string>)
 }
 
 export class VaultManager implements VaultProvider {
-  private registry: RegistryFile = { version: 1, currentVaultId: null, mainVaultId: null, vaults: [] }
-  /** 工作区种子来源（数组或取值函数）：每次解析现取，运行期新增的工作区立刻成为边界。 */
+  private registry: RegistryFile = { version: 1, currentVaultId: null, vaults: [] }
+  /** 选择器语法 `workspaceRoots?: WorkspaceSeed[] | (() => WorkspaceSeed[])` 见 VaultManagerOptions。 */
   private readonly seedsOf: () => WorkspaceSeed[]
-  /** 主库+子库能力开关（默认读 KNJ_OBSIDIAN_SUBVAULTS；off 时主库完全不参与）。 */
-  private readonly subVaultsOn: boolean
-  /** 主库项目根（`.wiki` 在其下）。注册≠建库：这里只决定「登记哪个目录」。 */
-  private readonly mainRoot: string
   /** root → VaultStore 复用：VaultStore 携带 mtime 页缓存，按请求新建实例会让缓存永远失效 */
   private readonly stores = new Map<string, VaultStore>()
 
   constructor(private readonly opts: VaultManagerOptions) {
     const seedsSource = opts.workspaceRoots ?? []
     this.seedsOf = typeof seedsSource === 'function' ? seedsSource : () => seedsSource
-    this.subVaultsOn = opts.subVaults ?? subVaultsEnabled()
-    this.mainRoot = resolve(opts.mainRoot ?? defaultMainRoot())
     this.load()
     this.seed()
   }
 
-  /** 现取工作区种子：宿主可能在运行期新增/移除工作区，快照会让新工作区不是边界。 */
+  /**
+   * 现取工作区种子：宿主工作区会在**运行期**新增，构造时的数组快照会把新工作区漏出
+   * 「查找边界」，于是它下面的路径会越过它去命中祖先库（评审 2026-11-05 P1-3）。
+   */
   private seedsNow(): WorkspaceSeed[] {
     try {
       return this.seedsOf() ?? []
@@ -117,18 +102,10 @@ export class VaultManager implements VaultProvider {
         this.registry = {
           version: 1,
           currentVaultId: typeof raw.currentVaultId === 'string' ? raw.currentVaultId : null,
-          mainVaultId: typeof raw.mainVaultId === 'string' ? raw.mainVaultId : null,
-          // 过滤畸形条目（root 必须存在）；id 缺失/不合法时按根重算；role 缺省=child（旧注册表兼容）
+          // 过滤畸形条目（root 必须存在）；id 缺失/不合法时按根重算
           vaults: raw.vaults
             .filter((v): v is VaultRecord => !!v && typeof v.root === 'string' && typeof v.name === 'string')
-            .map((v) => ({
-              id: vaultIdOf(v.root),
-              // 名字会原样进 L0 身份块：载入路径也要清洗成单行（评审 R5），空则退回目录名
-              name: sanitizeVaultName(v.name, defaultNameFor(resolve(v.root), this.seedsNow())),
-              root: resolve(v.root),
-              source: v.source,
-              ...(v.role === 'main' || v.role === 'child' ? { role: v.role } : {}),
-            })),
+            .map((v) => ({ id: vaultIdOf(v.root), name: v.name, root: resolve(v.root), source: v.source })),
           removedRoots: Array.isArray(raw.removedRoots) ? raw.removedRoots.filter((r) => typeof r === 'string') : [],
         }
       }
@@ -160,64 +137,17 @@ export class VaultManager implements VaultProvider {
   private seed(): void {
     const before = JSON.stringify(this.registry)
     const removed = new Set((this.registry.removedRoots ?? []).map((r) => resolve(r)))
-    const add = (root: string, source: VaultRecord['source'], name?: string, role?: VaultRecord['role']): void => {
+    const add = (root: string, source: VaultRecord['source']): void => {
       const r = resolve(root)
       if (removed.has(r)) return
-      const existing = this.registry.vaults.find((v) => resolve(v.root) === r)
-      if (existing) {
-        if (name && !existing.name) existing.name = sanitizeVaultName(name, defaultNameFor(r, this.seedsNow()))
-        if (role) existing.role = role
-        return
-      }
-      this.registry.vaults.push({
-        id: vaultIdOf(r),
-        name: sanitizeVaultName(name ?? '', defaultNameFor(r, this.seedsNow())),
-        root: r,
-        source,
-        ...(role ? { role } : {}),
-      })
+      if (this.registry.vaults.some((v) => resolve(v.root) === r)) return
+      this.registry.vaults.push({ id: vaultIdOf(r), name: defaultNameFor(r, this.seedsNow()), root: r, source })
     }
     add(this.opts.cwdRoot, 'cwd')
     for (const w of this.seedsNow()) {
       // 目录已消失的已注册工作区跳过，避免幽灵库
       if (!existsSync(w.path)) continue
       add(w.path, 'workspace')
-    }
-    // 主库（2026-10-25）：本机唯一。注册 ≠ 建库 —— 只登记 + 标 role，
-    // 绝不创建 .wiki、绝不抢 currentVaultId（否则面板/未给 root 的调用方会被主库顶替）。
-    if (this.subVaultsOn) {
-      // 主库唯一性：**已登记的 mainVaultId 优先**（评审 R6）。此前无条件把默认根扶正，于是
-      // setMainVault() 的结果重启即丢——API 与持久化字段都在，行为却是谎报。
-      let chosen = this.registry.mainVaultId
-        ? this.registry.vaults.find((v) => v.id === this.registry.mainVaultId)
-        : undefined
-      // 换机/搬移（2026-11-01）：主库 root 是绝对路径，拷到别的机器（或把目录搬走）后它指向一个
-      // 不存在的目录，而「已登记优先」会让 KNJ_OBSIDIAN_MAIN_VAULT_DIR 永远不生效——改址静默失效。
-      // 只判**目录不存在**：root 在、只是还没有 .wiki 是合法的「已登记未初始化」，不得回退。
-      if (chosen && !existsSync(chosen.root)) {
-        this.registry.mainVaultId = null
-        chosen = undefined
-      }
-      if (chosen) {
-        chosen.role = 'main'
-        for (const v of this.registry.vaults) if (v.role === 'main' && v.id !== chosen.id) v.role = 'child'
-      } else {
-        add(this.mainRoot, 'attached', MAIN_VAULT_NAME, 'main')
-        const mainRec = this.registry.vaults.find((v) => resolve(v.root) === resolve(this.mainRoot))
-        if (mainRec) {
-          mainRec.role = 'main'
-          this.registry.mainVaultId = mainRec.id
-          for (const v of this.registry.vaults) {
-            if (v.id === mainRec.id) continue
-            if (v.role === 'main') v.role = 'child'
-          }
-        }
-      }
-    } else {
-      // 关闭 = 回到旧版语义（评审 R3）。只"不新增"不够：旧注册表里的 role/mainVaultId 会继续
-      // 生效，mainVault() 仍返回主库、检索仍扩展、currentRecord 仍可能兜底到主库。
-      for (const v of this.registry.vaults) if (v.role === 'main') v.role = 'child'
-      this.registry.mainVaultId = null
     }
     const current = this.registry.vaults.find((v) => v.id === this.registry.currentVaultId)
     if (!current) {
@@ -230,12 +160,7 @@ export class VaultManager implements VaultProvider {
   // ---------- VaultProvider ----------
 
   listVaults(): VaultListEntry[] {
-    // 关闭主库能力时主库**完全不参与**（评审 R3）：配合 seed 的降级与 mainVault() 的守卫，
-    // 把旧注册表里残留的主库从列表里摘掉，行为才真正回到旧版。
-    const records = this.subVaultsOn
-      ? this.registry.vaults
-      : this.registry.vaults.filter((v) => resolve(v.root) !== this.mainRoot)
-    return records.map((v) => ({
+    return this.registry.vaults.map((v) => ({
       ...v,
       pageCount: this.countPages(v.root),
       // 未初始化 = 磁盘上还没有 .wiki（注册≠建库；初始化只由显式动作或首次写入触发）
@@ -249,22 +174,14 @@ export class VaultManager implements VaultProvider {
   }
 
   currentRecord(): VaultRecord | null {
-    const current = this.find(this.registry.currentVaultId)
-      ?? this.registry.vaults.find((v) => !this.isMainRecord(v))
-      ?? this.registry.vaults[0]
-      ?? null
+    const current = this.find(this.registry.currentVaultId) ?? this.registry.vaults[0] ?? null
     if (!current) return null
     // 当前库已初始化 → 行为与改前完全一致，不因别的库存在而漂移。
     if (this.isInitialized(current.root)) return current
     // 当前库还是空壳时，优先落到**另一个已初始化**的库：否则边栏与蒸馏启动器会指向
     // 一个没有任何内容的壳（2026-10-13 实测的"答偏"）。全都未初始化时仍返回当前库，
     // 让"先初始化"的显式动作有落点。
-    //
-    // ⚠️ 这个兜底**绝不能选主库**（评审 R1）：无 cwd / 无工作区的调用方会因此把写入
-    // 落进主库，而回执仍按入参说 child —— 双重谎言。主库只能经显式 API 访问。
-    const initialized = this.registry.vaults.find(
-      (v) => v.id !== current.id && !this.isMainRecord(v) && this.isInitialized(v.root),
-    )
+    const initialized = this.registry.vaults.find((v) => v.id !== current.id && this.isInitialized(v.root))
     return initialized ?? current
   }
 
@@ -316,19 +233,11 @@ export class VaultManager implements VaultProvider {
   readonlyVaultForRoot(root: string): { store: VaultStore; name: string } | undefined {
     const r = resolve(root)
     const registered = this.registry.vaults.find((v) => resolve(v.root) === r)
-    // 主库根本不是「工作区的库」（评审 R2）：它的根往往就是 `~/.dsh`，而 DSH 自己会在
-    // 其下跑技能/项目目录。把主库当工作区库会让 L0 注入「本工作区的知识库：主知识库」、
-    // 命中没有 `[主库]` 标记、默认 ingest 直接写进主库。主库只能经显式 API（mainVault）访问。
-    // 注意（评审 R3 的隐含耦合，已知并接受）：`off` 模式下主库记录已被降级、mainVaultId 清空，
-    // 这层保护随之消失——`~/.dsh` 会像旧版那样被当成普通工作区目录。这正是"回滚干净"该有的
-    // 行为；不要为了顺带保护而在 off 下保留主库语义。
-    if (registered && this.isMainRecord(registered)) return undefined
     if (registered && existsSync(join(registered.root, '.wiki'))) {
       return { store: this.storeFor(registered.root, false), name: registered.name }
     }
     const nearest = nearestVaultRoot(r, this.knownRoots())
     if (!nearest) return undefined
-    if (this.isMainRecord(this.registry.vaults.find((v) => resolve(v.root) === nearest))) return undefined
     const hit = this.registry.vaults.find((v) => resolve(v.root) === nearest)
     return {
       store: this.storeFor(nearest, false),
@@ -340,19 +249,8 @@ export class VaultManager implements VaultProvider {
   private knownRoots(): Set<string> {
     const roots = new Set<string>()
     roots.add(resolve(this.opts.cwdRoot))
-    // 主库根不是「工作区的库」，但必须是查找的**停止位**：否则主库还没 `.wiki` 时，
-    // 主库之下的 cwd 会越过它、命中更外层的遗留库（本机真实存在 `~/.wiki`）。
-    // 「命中主库」的情况由 readonlyVaultForRoot 里的 isMainRecord 拒绝，不靠这里。
-    if (this.subVaultsOn) roots.add(this.mainRoot)
-    for (const v of this.registry.vaults) {
-      // 主库记录本身不贡献边界（已在上面显式加入 mainRoot，且它的根可能被改址）。
-      if (this.isMainRecord(v)) continue
-      roots.add(resolve(v.root))
-    }
-    for (const s of this.seedsNow()) {
-      if (this.isMainRecord(this.registry.vaults.find((v) => resolve(v.root) === resolve(s.path)))) continue
-      roots.add(resolve(s.path))
-    }
+    for (const v of this.registry.vaults) roots.add(resolve(v.root))
+    for (const s of this.seedsNow()) roots.add(resolve(s.path))
     return roots
   }
 
@@ -360,44 +258,6 @@ export class VaultManager implements VaultProvider {
   recordForRoot(root: string): VaultRecord | undefined {
     const r = resolve(root)
     return this.registry.vaults.find((v) => resolve(v.root) === r)
-  }
-
-  /** 主库记录：mainVaultId 优先，旧数据只有 role 时按 role 兜底。 */
-  private mainRecordOf(): VaultRecord | undefined {
-    const byId = this.registry.mainVaultId
-      ? this.registry.vaults.find((v) => v.id === this.registry.mainVaultId)
-      : undefined
-    return byId ?? this.registry.vaults.find((v) => v.role === 'main')
-  }
-
-  /**
-   * 主库视图（开关关闭或未注册时 undefined）。
-   *
-   * `initialized=false` 表示主库目录还没建 `.wiki`：调用方应**跳过**主库扩展，
-   * 而不是自动建库（建库是显式动作，同 wiki_init 的既有契约）。
-   */
-  mainVault(): { store: VaultStore; name: string; root: string; initialized: boolean; record: VaultRecord } | undefined {
-    if (!this.subVaultsOn) return undefined
-    const rec = this.mainRecordOf()
-    if (!rec) return undefined
-    return {
-      record: rec,
-      store: this.storeFor(rec.root, false),
-      name: rec.name,
-      root: rec.root,
-      initialized: this.isInitialized(rec.root),
-    }
-  }
-
-  /** 设置主库：唯一性由这里保证 —— 其余 role=main 一律降级 child。 */
-  setMainVault(id: string): VaultRecord | null {
-    const rec = this.registry.vaults.find((v) => v.id === id)
-    if (!rec) return null
-    for (const v of this.registry.vaults) if (v.role === 'main') v.role = 'child'
-    rec.role = 'main'
-    this.registry.mainVaultId = rec.id
-    this.persist()
-    return rec
   }
 
   switchVault(id: string): VaultRecord | null {
@@ -463,16 +323,14 @@ export class VaultManager implements VaultProvider {
       this.registry.removedRoots = removed.filter((x) => resolve(x) !== r)
     }
     const existing = this.registry.vaults.find((v) => resolve(v.root) === r)
-    // 名字会原样进 L0 身份块：入库前先清洗（评审 R5）。
-    const safeName = name && name.trim() ? sanitizeVaultName(name, defaultNameFor(r, this.seedsNow())) : undefined
     if (existing) {
-      if (safeName) {
-        existing.name = safeName
+      if (name?.trim()) {
+        existing.name = name.trim()
         this.persist()
       }
       return existing
     }
-    const rec: VaultRecord = { id: vaultIdOf(r), name: safeName ?? (basename(r) || r), root: r, source: 'attached' }
+    const rec: VaultRecord = { id: vaultIdOf(r), name: name?.trim() || basename(r) || r, root: r, source: 'attached' }
     this.registry.vaults.push(rec)
     this.registry.currentVaultId = rec.id
     this.persist()
@@ -482,9 +340,6 @@ export class VaultManager implements VaultProvider {
   removeVault(id: string): boolean {
     const idx = this.registry.vaults.findIndex((v) => v.id === id)
     if (idx === -1) return false
-    // 主库不可移除（评审 R4）：它是本机唯一的跨项目库。移除会让 mainVaultId 悬空、
-    // target=main 全部失效；更糟的是 removedRoots 会让它在重启后被 seed 再次跳过 = 永久失效。
-    if (this.isMainRecord(this.registry.vaults[idx])) return false
     // 任何来源的库都可移除：cwd/workspace 种子每次启动会重新尝试加入，
     // 因此把根目录记入 removedRoots 才能让移除在重启后仍然生效（显式 attach 可解除）。
     const removedRoot = resolve(this.registry.vaults[idx].root)
@@ -502,13 +357,6 @@ export class VaultManager implements VaultProvider {
   private find(id: string | null): VaultRecord | undefined {
     if (!id) return undefined
     return this.registry.vaults.find((v) => v.id === id)
-  }
-
-  /** 是否主库记录：mainVaultId 命中，或旧数据里只标了 role=main。 */
-  private isMainRecord(rec: VaultRecord | undefined): boolean {
-    if (!rec) return false
-    if (rec.role === 'main') return true
-    return this.registry.mainVaultId === rec.id
   }
 
   private countPages(root: string): number {

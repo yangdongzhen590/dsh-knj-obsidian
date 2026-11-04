@@ -1,65 +1,72 @@
 ---
 id: 主库-子库模型-一个主库-n-个工作区子库
-title: 主库-子库模型（一个主库 + N 个工作区子库）
+title: 主库-子库模型（已于 2026-11-05 整体回滚）
 category: concepts
 tags: [knowledge-base, multi-vault, dsh-plugin, rollback]
-summary: 本机唯一主库（~/.dsh/.wiki）存跨项目通用知识，各工作区 .wiki 为子库；写入默认子库、target=main 才写主库；检索子库候选<3 才扩主库并标 vault=main；2026-11-01 起主库默认不对面板与 L0 暴露（KNJ_OBSIDIAN_MAIN_UI=on 恢复），KNJ_OBSIDIAN_SUBVAULTS=off 一键回滚。
+summary: 2026-10-25 引入的「一个主库 + N 个工作区子库」模型已于 2026-11-05（v2026.11.15）整体回滚：代码回到无主库的能力面，注册表删掉主库与遗留库记录，两个残留 .wiki 目录改名保留。本页保留为历史记录：原模型行为、五类负面 bug、回滚动作清单、回滚后仍保留的三处修复（面板切库作用域 / 运行期边界 / 历史栈）。
 tier: core
 source: agent:capture
 confidence: inferred
 created: 2026-10-24T18:54:12.119Z
-updated: 2026-11-01T09:30:00.000Z
+updated: 2026-11-04T17:29:10.469Z
 ---
 
-主库 + N 子库是 dsh-knj-obsidian 2026-10-25 引入的知识组织模型：物理上多库，逻辑上一个主库、N 个子库。
+# 主库-子库模型（已回滚）
 
-## 模型
+**结论先行**：该模型 2026-10-25 引入（`1a643af`），2026-11-05 随 **v2026.11.15** 整体摘除（分支 `rollback/no-main-vault`）。现在 dsh-knj-obsidian 回到「多库但无主库」的能力面——与 DSH 0.2 迁移后、主库之前的状态（`5f8df54`）等价，且**不是**退回到不兼容 DSH 高版本的老包。
 
-- **主库**：本机唯一，默认 `~/.dsh`（其下 `.wiki` 即主库，展示名「主知识库」），放**跨项目通用知识**（方法论、踩坑、工具经验）。可用 `KNJ_OBSIDIAN_MAIN_VAULT_DIR` 改位置。
-- **子库**：各工作区的 `.wiki`，放**项目知识**。旧注册表没有 `role` 字段的条目一律按 `child` 处理（向后兼容）。
-- **唯一性**：`vaults.json` 的 `mainVaultId` 为准；`setMainVault()` 会把其它 `role=main` 降级为 `child`。
-- **注册 ≠ 建库**：主库只登记、不自动创建 `.wiki`；初始化是显式动作（`wiki_init`）。
+## 回滚原因
 
-## 行为
+主库引入后带出 5 类「换机才咬人 / 静默答偏」的缺陷，收益（跨项目通用知识复用）远小于成本：
 
-1. **检索**（`wiki_query`）：先查本工作区子库；**实召回 < 3**（语义兜底噪声不算）且主库已初始化时才扩主库。合并后**整体按分数降序**（同分时子库在前），不是"子库整块垫在前面"——否则稀疏子库的 0.1 分语义噪声会把 4.8 分的主库真命中压下去。主库命中带 `vault: 'main'`，渲染为 `[主库]`。`mode: 'index-only'` 是只读本库 index.md 的快速路径，**不扩主库**。主库不可用/未初始化时静默跳过（不报错、不改结果）。
-2. **写入**（`wiki_ingest`）：默认落当前会话**子库**；`target: 'main'` 才写主库。主库未初始化时**报错而不建库**。回执的 `vaultRoot` + `vaultRole` 按**真实落点**计算（不是按入参推导），无 cwd 回退也不会把主库谎报成 child。
-3. **身份**（2026-11-01 起默认不暴露，见下文「状态」）：`/vaults?root=` 额外返回 `main`（名称/根/页数/是否初始化/role）；L0 注入在主库已初始化时多一行「主库：…」。库名入库前统一清洗（去控制字符/换行、限长 80），因为名字会原样进提示。
-4. **UI**（仅 `KNJ_OBSIDIAN_MAIN_UI=on` 时）：面板顶部多一个「主库」chip；点主库 = 本面板临时覆盖（`overrideRoot`），「跟随工作区」可还原。主库没有"移除"按钮。**已知缺陷**：覆盖只换了标题，内容区/树/搜索仍按会话根取数（`src/client/VaultHeader.tsx` 的 overrideRoot 未下传），点主库进去是死路；带主库根的 GET 全 409（`readonlyVaultForRoot` 对主库根返回 undefined）。
-5. **开关**：`KNJ_OBSIDIAN_SUBVAULTS=off`（等价写法 `false`/`0`/`no`/`disabled`）→ 旧注册表里的 `role=main` 被降级、`mainVaultId` 清空、主库不出现在库列表、检索不扩展、UI 不显示主库入口，行为回到旧版。默认 **on**。注意这层回滚是**连带的**：主库概念消失后，「`~/.dsh` 下的目录不算工作区库」这条保护也一并消失（旧版就没有主库，本就没有这条保护），所以 `off` 下别在 `~/.dsh` 里建库。
+1. **`wiki_init` 落点与读路径口径相反**：init 用 `listVaults()`（含主库）算「工作区根」，读路径却把主库根排除在 `knownRoots` 之外 → 在建了库的 cwd 里 init 报「已存在 N 页」，同 cwd 查询却永远说「没有库」。
+2. **越过主库根绑到祖先遗留库**：cwd 在 `~/.dsh` 之下时向上查找越过主库根，命中家目录里历史遗留的 `~/.wiki`（11 页）。
+3. **面板点了「主库」只能看见「没有库」**：`readonlyVaultForRoot` 对主库根返回 `undefined` 是设计不变量，带主库根的 GET 一律 409，UI 入口天然是死路。
+4. **`wiki_read` 读不回主库正文**：主库候选只能消费 `wiki_query` 的 snippet，违反「引用前读原文」纪律。
+5. **写闸与语义键的口径分歧**：写闸只覆盖 `wiki_capture`/`wiki_ingest`（`VAULT_WRITE_TOOLS`），而 `wiki_normalize_tags`/`wiki_checkpoint`/`wiki_export`/`wiki_init` 都写盘；`vaultRootOfStore` 返回 `.wiki` 目录而索引键按项目根，L1 语义兜底从未命中（`collectionIdOf` 差 `-wiki` 后缀）。
 
-## 状态（2026-11-01）
+共同根因：**「库」同时由注册表（可配置、有 role）和文件系统（向上找 `.wiki`）两套机制决定**，主库在这两套机制里的边界定义不一致。
 
-主库是**实验性能力，默认不对面板与 L0 暴露**（方案 A）：面板无主库 chip、库下拉不含主库条目、L0 不出「主库：」行；`wiki_ingest{ target: 'main' }` 写入、检索扩展、注册表与数据全部保留。`KNJ_OBSIDIAN_MAIN_UI=on` 原样恢复（等价 `true`/`1`/`yes`/`enabled`），门控在 `src/subvault.ts` 的 `mainVaultExposed()`。
+## 回滚动作（2026-11-05 实际执行）
 
-之所以藏起来，是两条未修的已知缺陷，且都由"按会话根解析库"这一处根因派生：
+- **代码**：`git checkout 5f8df54 -- src/{vault-manager,routes,tools,trigger,types,retriever}.ts src/client/{api,index}.ts`；删 `src/subvault.ts` 与 `subvault.test.mjs` / `subvault-guards.test.mjs` / `subvault-http.test.mjs` / `vault-init-target.test.mjs`；`VaultHeader.tsx` 逐处编辑，去掉全部主库件、保留 P1-1 的受控 props。
+- **测试**：525/525 绿（回滚前 571，差值为 subvault 与主库 init 用例）。
+- **注册表** `~/.dsh/knj-obsidian/vaults.json`（备份 `vaults.json.bak-20261105`）：删主库记录 `v-6e8596052916`（`~/.dsh`）与遗留记录 `v-95927272b929`（`~`），删 `mainVaultId` 与所有 `role` 字段，剩 12 条，`currentVaultId` 仍指向项目库。
+- **磁盘**：`~/.dsh/.wiki` → `~/.dsh/.wiki.rolledback-20261105`（5 页）；`~/.wiki` → `~/.wiki.rolledback-20261105`（11 页）。**内容零删除**，改回原名即可恢复为普通库。改名是必需的：`.wiki` 的发现走文件系统向上查找，**删注册记录拦不住它**。
+- **数据**：主库 4 页（`compile-artifact-rollback-discipline`、`host-hook-contract-02`、`plugin-verification-traps`、`semantic-layer-diagnosis`）逐页比对后确认项目库已有等价页（见 [[只改编译产物的修复会被下一次构建静默回滚]]、[[插件验证纪律与实测陷阱]] 等），**未复制**，避免造重复页。
 
-- **读不回正文**：`wiki_read` 只按会话库解析（`src/tools.ts` 的 sessionReadonlyStore，解析不出就返回 undefined 且不回退），拿到主库候选 id 也读不到内容 —— 主库唯一消费路径只剩 `wiki_query` 的 snippet，而本库纪律是"引用前读原文"。
-- **面板切不过去**：chip 的 `overrideRoot` 只在 `src/client/VaultHeader.tsx` 内部生效，内容区（`src/client/WikiSidebar.tsx`）仍按会话 root；`readonlyVaultForRoot` 对主库根返回 undefined，于是带主库根的 GET 一律 409。`wiki:vault-changed` 事件全仓只监听、无派发，是死事件。
+## 回滚后实测（真实形状，8/8）
 
-顺带修的两处（同样是"换机才咬人"的坑）：
+| cwd | 解析结果 |
+| --- | --- |
+| `~/.dsh/skills/alpha` | 无库 |
+| `~/.dsh` | 无库 |
+| `~` | 无库 |
+| `~/.dsh/profiles/web` | 无库（已注册但该目录无 `.wiki`） |
+| `~/Documents/newproj` | 无库 |
+| 启动后新建的 `~/.dsh/skills/fresh-ws` | 无库（不再被祖先库接管） |
+| `D:\dsh-knj\dsh-knj-obsidian\src` | 项目库 |
+| `D:\dsh-knj\dsh-knj-workflow\lib` | 对应项目库 |
 
-- 未初始化主库的写入报错文案不再指引 `wiki_init`（主库初始化没有合法 UI 入口，那条指引是死胡同）；主库写入仍报错且**绝不自动建库**。
-- 注册表里主库 root 目录若已不存在（换机/搬目录），启动时回退到当前配置的默认根并重写 `mainVaultId`（只判目录不存在；"root 在、只是没 `.wiki`"是合法的已登记未初始化，不回退）。
+`wiki_init` 在 `~/.dsh/skills/alpha` 现在落 cwd 自己：`readonlyVaultForRoot` 无命中 → `workspaceRootFor` 取 cwd 的**最深已注册祖先**，`~/.dsh` 已不在注册表里，于是就是 cwd。
 
-后续产品化（方案 C，未做）：按 id 读回主库页（`wiki_read` 接受 `vault: 'main'`）、面板只读浏览主库、子库页"晋升到主库"、跨库 wikilink 显式化、主库参与语义检索（QMD 里主库是独立 collection，须显式传，否则复现别库噪声）。
+## 回滚中保留的三处修复（与主库无关，都是通用缺陷）
 
-## 不变量与边界
+- **面板切库作用域（P1-1）**：`overrideRoot` 上提到 `src/client/WikiSidebar.tsx`，`VaultHeader` 改受控（`overrideRoot` / `onOverrideRoot`），树/搜索/图谱/lint/蒸馏五个视图统一吃 `effectiveRoot`，切库派发 `wiki:vault-changed`。
+- **运行期新增工作区成为边界（P1-3）**：`VaultManagerOptions.workspaceRoots` 支持 `WorkspaceSeed[] | (() => WorkspaceSeed[])`，`knownRoots()` 每次现取；`src/index.ts` 传取值函数。
+- **笔记历史栈随库重置（P2-3）**：`NoteWorkbench` 栈重置依赖加 `root`，切库后「返回」不再打开另一库的同名页。
 
-- 主库**不抢占**全局 `currentVaultId`（否则未给 root 的调用方/UI 会被主库顶替）；**也绝不作为"当前库"的兜底**（本库是空壳时宁可返回空壳，让"先初始化"有落点）。
-- 主库根**不是工作区库**：`readonlyVaultForRoot` 对主库根及其子目录返回 `undefined`，否则 `~/.dsh` 之下的会话会把 L0 说成「本工作区的知识库：主知识库」、默认 ingest 写进主库。
-- 子库实召回充足（≥3）时**不查主库**（`subvault-guards.test.mjs` 的 R9-1 断言零调用），避免主库污染项目检索排序。
-- 主库**不可移除**（`removeVault` 返回 false、端点 400）：误删会让 `mainVaultId` 悬空，且 `removedRoots` 让它在重启后被 seed 跳过 = 永久失效。
-- 写主库必须显式：不带 `?root=` 的 `POST` 写请求若落在主库上，返回 409 `main-vault-write-needs-explicit-target`；`/import` 的可导入边界也排除主库根。
-- 主库命中按 id 去重：同 id 以子库版本为准。
-- 不自动迁移历史页、不做子库间检索、不改排序/语义算法。
+## 随之失效的不变量（不要再引用）
 
-## 回滚
+- ~~主库根不是工作区库~~、~~`mainVaultId` 唯一性~~、~~`target: 'main'`~~、~~主库扩展检索（`vault: 'main'`）~~、~~`KNJ_OBSIDIAN_MAIN_UI`~~、~~`KNJ_OBSIDIAN_SUBVAULTS`~~：环境变量与端点一并消失。
+- 读路径**不再**排除任何「主库根」。残留后果：若将来在某个祖先目录里放了 `.wiki`，它会被向上查找自动跟随（这是无主库时代的既有语义，不是新 bug）。
 
-三级：① 设 `KNJ_OBSIDIAN_SUBVAULTS=off` 重启；② 恢复已安装副本 `~/.dsh/profiles/web/.backup-dsh-knj-obsidian-pre-subvault-*`；③ `git checkout backup/pre-subvault-20261025-024436`。知识库内容可用 `wiki_checkpoint` 还原点（2026-10-24T18-45-09-760Z）回滚。
+## 若将来要重做
+
+先解决两套「库身份」机制的统一（注册表 vs 文件系统），再谈主库；否则同样的边界不一致会原样复发。恢复旧实现可 `git checkout 1a643af -- src` 或 revert 本次回滚提交，但请连带恢复注册表字段与目录名。
 
 ## 相关
 
-- [[会话级知识库绑定]]：面板/工具按会话 cwd 取库的底座；主库扩展是它的上层补充。
-- [[插件验证纪律与实测陷阱]]：本次踩到的「下拉 value 匹配不到 option 时浏览器回落到第一个库」属于同类假象。
+- [[会话级知识库绑定]]：面板/工具按会话 cwd 取库的底座（本轮未动摇）。
+- [[插件验证纪律与实测陷阱]]：本轮所有结论都靠真 VaultManager + 真路由的探针复核，而非读源码推断。
 
