@@ -311,10 +311,13 @@ function semanticReasonOf(snippet: string): string[] {
   return seen
 }
 
-/** 库根：VaultStore 的只读属性（供触发层按库定位语义索引）。 */
+/**
+ * 库根（`.wiki` 的父目录）：语义运行时按库根索引（工具层 wiki_search_semantic 用的就是这个键）。
+ * 触发层若传 `.wiki` 目录，就永远查不到已热的运行时——语义兜底会静默失效。
+ */
 function vaultRootOfStore(store: VaultStore): string {
   const value = (store as unknown as { wikiRoot?: unknown }).wikiRoot
-  return typeof value === 'string' ? resolve(value) : ''
+  return typeof value === 'string' ? resolve(value, '..') : ''
 }
 
 /** L1 一档的提醒文案：给路径、给理由、给**摘要**（不再只给路径），并留「可以忽略」的出口。 */
@@ -505,7 +508,10 @@ export interface TurnFacts {
 
 const VAULT_READ_TOOLS = new Set(['read', 'grep', 'glob', 'read_image', 'wiki_query', 'wiki_search_semantic'])
 const MUTATION_TOOLS = new Set(['edit', 'write', 'str_replace_editor'])
-const VAULT_WRITE_TOOLS = new Set(['wiki_capture', 'wiki_ingest'])
+/** 所有会落盘的 wiki_* 工具（含改页/快照/导出/脚手架）。 */
+const VAULT_WRITE_TOOLS = new Set([
+  'wiki_capture', 'wiki_ingest', 'wiki_normalize_tags', 'wiki_checkpoint', 'wiki_export', 'wiki_init',
+])
 
 function argsTextOf(event: SessionEventLike): string {
   const raw = event.data?.arguments
@@ -1104,10 +1110,13 @@ export function writeGateModeOf(env: Record<string, string | undefined> = proces
 }
 
 /**
- * 知识库的写入型工具（只有这两个会改库；wiki_lint 等是校验/读取，不属于写入）。
- * 与工具注册处（src/tools.ts 的 wiki_capture / wiki_ingest）一一对应。
+ * 知识库的写入型工具（会改库或落新产物的都算；wiki_lint / wiki_query 等校验/读取不算）。
+ * 与工具注册处（src/tools.ts）一一对应；wiki_init 只有「还没有库」时才写盘，
+ * 而写闸在没有库时本来就会沉默（currentVault 为空），所以初始化不会被挡。
  */
-const VAULT_WRITE_TOOL_NAMES = new Set(['wiki_capture', 'wiki_ingest'])
+const VAULT_WRITE_TOOL_NAMES = new Set([
+  'wiki_capture', 'wiki_ingest', 'wiki_normalize_tags', 'wiki_checkpoint', 'wiki_export', 'wiki_init',
+])
 
 /**
  * 未经用户授权的写入被拒时的文案（给模型指路：该怎么把决定权交回用户）。

@@ -215,14 +215,19 @@ function sessionWriteStore(provider: VaultProvider, exec: unknown): VaultStore |
 }
 
 /**
- * 会话工作区的「工作区根」：取注册表里是 cwd 祖先的最深已注册根（会话 cwd 常是
+ * 会话工作区的「工作区根」：取注册表里是 cwd 祖先的最深**工作区**根（会话 cwd 常是
  * 工作区子目录）；没有祖先命中时就是 cwd 本身（wiki_init 在新工作区建库的落点）。
+ *
+ * 只认 source:'workspace'|'attached'：进程 cwd 会被无条件登记成 'cwd' 种子，
+ * 那是「读路径的边界」，不是「建库的落点」。把它算进候选会让 home 劫持所有新目录的
+ * 初始化（真机：在 home 下任意新目录 init → home/.wiki）。
  */
 function workspaceRootFor(provider: VaultProvider, cwd: string): string {
   const target = resolve(cwd)
   let best = ''
   try {
     for (const v of provider.listVaults()) {
+      if (v.source !== 'workspace' && v.source !== 'attached') continue
       const root = resolve(v.root)
       if (target === root || target.startsWith(root + '\\') || target.startsWith(root + '/')) {
         if (root.length > best.length) best = root

@@ -26,6 +26,7 @@ import {
   recurrenceSummaryOf, recurrenceEnabled, RECURRENCE_THRESHOLD,
   gateModeOf, isMutationCall, isHighRiskTarget, highRiskPathsFromVault, consultedVaultSince,
   latestNoticeByPrefix, writeGateModeOf, vaultCanHelp, recurrenceHintOf,
+  semanticFallbackCandidates,
 } from './lib/trigger.js'
 
 const NOW = '2026-08-25T00:00:00.000Z'
@@ -430,7 +431,7 @@ test('L1 可观测：词面 0 命中且语义未热 → l1-skip(cold-semantic)',
   // 前提：本进程从未调用过语义工具 → 该库的运行时必然未热
   // （这正是 283d4b68 的真实现场：词面只命中 1 个词，语义兜底因为冷而静默）
   const { warmSemanticRuntime } = await import('./lib/semantic-hits.js')
-  assert.equal(warmSemanticRuntime(resolvePath(store.wikiRoot)), null, '用例前提：语义运行时未热')
+  assert.equal(warmSemanticRuntime(resolvePath(dir)), null, '用例前提：语义运行时未热')
 
   const host = fakeHost()
   const { logs, log } = collectLogs()
@@ -516,7 +517,7 @@ test('L1 可观测：语义已热但库里没有相关页 → l1-skip(no-hits)',
   // 人为把该库的语义运行时置为「已热」：假 store 上任何检索都会抛错，searchWarm 会吞掉并返回空。
   // 这条用例的价值是把「已热但没料」与「没热」分开——前者是库的问题，后者是触发链的问题。
   const { semanticRuntimeFor, disposeSemanticRuntimes } = await import('./lib/semantic-hits.js')
-  const root = resolvePath(store.wikiRoot)
+  const root = resolvePath(dir)
   await semanticRuntimeFor(root, async () => ({ store: { close() {} } }))
   t.after(() => disposeSemanticRuntimes())
 
@@ -537,6 +538,37 @@ test('L1 可观测：语义已热但库里没有相关页 → l1-skip(no-hits)',
   assert.equal(skip.detail.warm, true)
 })
 
+test('语义兜底：热运行时按库根索引，触发层与工具层键必须一致（不得差一层 .wiki）', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.writePage({
+    id: 'rate-limiting', title: '速率限制', category: 'concepts',
+    tags: ['ratelimit'], source: 's', confidence: 'extracted', created: NOW, updated: NOW,
+    body: '服务端返回 429 Too Many Requests 时应当退避重试。',
+  })
+
+  // 工具层（wiki_search_semantic）用库根作键；触发层必须查同一个键，
+  // 否则运行时永远「未热」，语义兜底静默失效（实测差一层 .wiki）。
+  const { semanticRuntimeFor, warmSemanticRuntime, disposeSemanticRuntimes } = await import('./lib/semantic-hits.js')
+  await semanticRuntimeFor(dir, async () => ({
+    status: 'ready',
+    modelPresent: true,
+    store: {
+      searchVector: async () => [{ displayPath: 'concepts/rate-limiting.md', score: 0.9, body: '# 速率限制\n429' }],
+      searchLex: async () => [],
+      getStatus: () => ({ totalDocuments: 1, needsEmbedding: 0, hasVectorIndex: true }),
+      close() {},
+    },
+  }))
+  t.after(() => disposeSemanticRuntimes())
+
+  assert.ok(warmSemanticRuntime(dir)?.store, '前置：热判据的键是库根')
+  assert.equal(warmSemanticRuntime(resolvePath(store.wikiRoot)), null, '键不得是 .wiki 目录（差一层的旧 bug）')
+
+  const hints = await semanticFallbackCandidates(store, '请求被限流了怎么办')
+  assert.ok(hints.some((h) => h.id === 'rate-limiting'), '触发层必须命中按库根索引的热运行时')
+})
+
 // --- 对抗评审（2026-10-24）抓出的三个真问题：lexical 恒为 0、warm 冒充可用、l1-status 位置 ---
 
 test('L1 可观测：只差一个词被门槛挡掉 → nearMiss 必须现形（283d4b68 的形状）', async (t) => {
@@ -550,7 +582,7 @@ test('L1 可观测：只差一个词被门槛挡掉 → nearMiss 必须现形（
     body: '加载端白名单会静默丢弃无标题任务。',
   })
   const { warmSemanticRuntime } = await import('./lib/semantic-hits.js')
-  assert.equal(warmSemanticRuntime(resolvePath(store.wikiRoot)), null, '用例前提：语义运行时未热')
+  assert.equal(warmSemanticRuntime(resolvePath(dir)), null, '用例前提：语义运行时未热')
 
   const host = fakeHost()
   const { logs, log } = collectLogs()
@@ -578,7 +610,7 @@ test('L1 可观测：语义运行时存在但后端不可用 → warm=false（�
 
   // 运行时对象存在，但没有 store（模型缺失 / 库加载失败）——semanticRawHits 的真实判据是 warm?.store
   const { semanticRuntimeFor, disposeSemanticRuntimes } = await import('./lib/semantic-hits.js')
-  await semanticRuntimeFor(resolvePath(store.wikiRoot), async () => ({ store: null, loadError: 'model-missing' }))
+  await semanticRuntimeFor(resolvePath(dir), async () => ({ store: null, loadError: 'model-missing' }))
   t.after(() => disposeSemanticRuntimes())
 
   const host = fakeHost()
@@ -1824,4 +1856,42 @@ test('写入闸：默认 off（不误伤 UI 蒸馏）；off 放行 / block 只�
   await preStep(hostBare, bareAgent.agent)
   const r2 = await gateExecute(hostBare, bareAgent.agent, 'wiki_capture', { title: 'x' })
   assert.deepEqual(r2.decision, { kind: 'allow' }, '没有库的会话不该被写入闸打扰')
+})
+
+test('写入闸：所有写盘工具都在闸内；没有任何库时 wiki_init 不被闸挡住', async (t) => {
+  const ws = makeWorkspace(t, 'write-gate-all')
+  const provider = { currentReadonly: () => undefined, readonlyVaultForRoot: (r) => ws.manager.readonlyVaultForRoot(r) }
+  const saved = process.env.KNJ_OBSIDIAN_WRITE_GATE
+  process.env.KNJ_OBSIDIAN_WRITE_GATE = 'block'
+  t.after(() => {
+    if (saved === undefined) delete process.env.KNJ_OBSIDIAN_WRITE_GATE
+    else process.env.KNJ_OBSIDIAN_WRITE_GATE = saved
+  })
+
+  // 这些工具都会写盘（normalize_tags 改页面、checkpoint 落快照、export 写 graph.json、
+  // init 建脚手架）；漏一个就等于给模型留了一道绕开用户决定的侧门。
+  const host = fakeHost()
+  installTrigger(host, provider, { createNotice: async (text, summary) => notice(text, summary) })
+  for (const name of ['wiki_normalize_tags', 'wiki_checkpoint', 'wiki_export', 'wiki_init']) {
+    const { agent: gateAgent } = fakeAgent([userEvent(1, '整理一下')], { cwd: ws.dir })
+    await preStep(host, gateAgent)
+    const r = await gateExecute(host, gateAgent, name, {})
+    assert.equal(r.decision.kind, 'deny', `${name} 会写盘，必须受写入闸约束`)
+  }
+
+  // 初始化自己不能被闸挡住：没有库时 currentVault 为空，闸必须沉默，
+  // 否则「先初始化再写入」的第一步就永远走不通。
+  const bare = mkdtempSync(join(tmpdir(), 'dsh-obsidian-init-gate-'))
+  t.after(() => rmSync(bare, { recursive: true, force: true }))
+  const manager = new VaultManager({ registryFile: join(bare, 'registry.json'), cwdRoot: bare })
+  const hostBare = fakeHost()
+  installTrigger(
+    hostBare,
+    { currentReadonly: () => undefined, readonlyVaultForRoot: (r) => manager.readonlyVaultForRoot(r) },
+    { createNotice: async (text, summary) => notice(text, summary) },
+  )
+  const bareAgent = fakeAgent([userEvent(1, '初始化知识库')], { cwd: bare })
+  await preStep(hostBare, bareAgent.agent)
+  const rInit = await gateExecute(hostBare, bareAgent.agent, 'wiki_init', {})
+  assert.deepEqual(rInit.decision, { kind: 'allow' }, '还没有库时 wiki_init 必须放行（否则永远建不了库）')
 })

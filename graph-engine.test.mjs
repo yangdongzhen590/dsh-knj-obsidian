@@ -44,6 +44,35 @@ test('buildGraph 产出节点与边（含断链标记）', (t) => {
   assert.equal(authNode.confidence, 'extracted')
 })
 
+test('代码区里的示例字面量 [[wikilink]] 不计入断链（与 lint 同一口径）', (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  store.writePage({
+    id: 'guide', title: '链接写法', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: NOW, updated: NOW,
+    body: [
+      '教程：真实链接 [[real-page]]。',
+      '',
+      '```md',
+      '围栏里的示例：[[wikilink]]',
+      '```',
+      '',
+      '行内代码 `[[inline-fake]]` 只是示例。',
+      '',
+      '~~~',
+      '[[tilde-fake]]',
+      '~~~',
+      '',
+    ].join('\n'),
+  })
+  store.writePage({ id: 'real-page', title: '真页', category: 'concepts', tags: [], source: 's', confidence: 'extracted', created: NOW, updated: NOW, body: 'ok' })
+  const g = buildGraph(store)
+  // 正文示例（围栏 / 行内代码）不是真实链接：图里不能冒出这些断链，
+  // 否则 /graph 的断链统计会与 lint 打架（实测 9 vs 0）。
+  assert.deepEqual([...new Set(g.edges.map((e) => e.target))], ['real-page'])
+  assert.equal(g.edges.filter((e) => e.broken).length, 0, '代码区字面量不得计为断链')
+  assert.ok(g.edges.some((e) => e.source === 'guide' && e.target === 'real-page' && e.broken === false), '真实链接仍要保留')
+})
+
 test('空 vault 返回空图', (t) => {
   const { dir, store } = makeVault()
   t.after(() => rmSync(dir, { recursive: true, force: true }))

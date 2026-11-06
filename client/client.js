@@ -7367,6 +7367,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		* - 源码：磁盘原文（含 frontmatter）可编辑 + 复制 + 保存（错误就地展示）
 		* 断链提示由父级（持有页面索引的 NoteWorkbench）判定后经 brokenLink prop 下传。
 		*/
+		/** 服务端 404 文案（页面不存在）：面板没有「新建页」入口，空白编辑器不能当新建用。 */
+		const MISSING_PAGE_RE = /页面不存在|page not found/i;
 		function NoteView({ note, brokenLink, onNavigate, onSaved, root }) {
 			const [mode, setMode] = (0, react.useState)("preview");
 			const [content, setContent] = (0, react.useState)("");
@@ -7376,6 +7378,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			const [saving, setSaving] = (0, react.useState)(false);
 			const [error, setError] = (0, react.useState)(null);
 			const [notice, setNotice] = (0, react.useState)(null);
+			/** 目标页在磁盘上不存在：置灰编辑器，避免把 404 误当「新建」。 */
+			const [missing, setMissing] = (0, react.useState)(false);
 			const pageUrl = () => {
 				const scope = root ? `&root=${encodeURIComponent(root)}` : "";
 				return `/api/obsidian-wiki/page?id=${encodeURIComponent(note.id)}&category=${encodeURIComponent(note.category)}${scope}`;
@@ -7384,6 +7388,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				let cancelled = false;
 				setError(null);
 				setNotice(null);
+				setMissing(false);
 				setDirty(false);
 				setMode("preview");
 				fetch(pageUrl()).then((r) => r.json()).then((data) => {
@@ -7395,7 +7400,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				});
 				fetchRawPage(note.id, note.category, root).then((r) => {
 					if (!cancelled) setRaw(r);
-				}).catch(() => {});
+				}).catch((e) => {
+					if (!cancelled && MISSING_PAGE_RE.test(String(e))) setMissing(true);
+				});
 				return () => {
 					cancelled = true;
 				};
@@ -7421,6 +7428,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 				}
 			};
 			const save = async () => {
+				if (missing) return;
 				setSaving(true);
 				setError(null);
 				setNotice(null);
@@ -7475,7 +7483,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 							type: "button",
 							className: `knj-btn ${dirty ? "knj-btn--primary" : "knj-btn--subtle"}`,
-							disabled: !dirty || saving,
+							disabled: !dirty || saving || missing,
 							onClick: save,
 							children: saving ? "保存中…" : dirty ? "保存" : "已保存"
 						})] })]
@@ -7489,6 +7497,11 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 							brokenLink,
 							"」不存在"
 						]
+					}),
+					missing && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "knj-banner knj-banner--warn",
+						style: { marginBottom: 10 },
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconWarning, { size: 14 }), "页面不存在，不能在此新建（编辑器已锁定）。请让 Agent 用 wiki_ingest / wiki_capture 创建页面。"]
 					}),
 					notice && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "knj-banner knj-banner--ok",
@@ -7507,6 +7520,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
 						className: "knj-wb__editor",
 						value: raw,
+						readOnly: missing,
 						onChange: (e) => {
 							setRaw(e.target.value);
 							setDirty(true);
@@ -7514,7 +7528,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 						spellCheck: false,
 						placeholder: "# 标题\n\n正文…（含 frontmatter 整份编辑）"
 					}),
-					mode === "source" && !dirty && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					mode === "source" && !dirty && !missing && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "knj-banner knj-banner--info",
 						style: { marginTop: 10 },
 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconInfo, { size: 14 }), "源码态展示磁盘原文，可直接编辑并保存（id / category 与路径不符会被服务端拒绝）。"]

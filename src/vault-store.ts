@@ -381,7 +381,7 @@ export class VaultStore implements VaultProvider {
   saveRawPage(id: string, category: WikiCategory, rawText: string): WikiPage {
     const file = this.safePagePath(id, category)
     if (!file) throw new SaveError(400, `invalid page id "${id}"`)
-    if (!existsSync(file)) throw new SaveError(404, `page not found: ${category}/${id}`)
+    if (!existsSync(file)) throw new SaveError(404, `页面不存在：${category}/${id}。此接口只编辑已有页面，不能新建；新建请用 wiki_ingest / wiki_capture。`)
     const text = rawText.replace(/\r\n/g, '\n')
     const page = parsePageText(text, id, category)
     assertSaveablePage(page, id, category)

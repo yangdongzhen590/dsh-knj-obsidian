@@ -3,7 +3,7 @@
 // 路径穿越拒绝、跨源 403、非 JSON 415、保存后原文件在失败时不变。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -170,4 +170,21 @@ test('POST /page 无 Origin/Referer → 403（localhost 写面默认拒绝）', 
     method: 'POST', headers: { ...JSON_HDR }, body: JSON.stringify({ raw }),
   })
   assert.equal(r.status, 403)
+})
+
+test('POST /page 对不存在的页面 → 可读 404（提示不能在此新建），且磁盘不落新文件', async (t) => {
+  const { dir, store } = makeVault()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const { host, handlers } = makeHost()
+  mountWikiRoutes(host, store)
+  const raw = ['---', 'id: ghost', 'title: 幽灵页', 'category: concepts', 'tags: []', 'source: s', 'confidence: extracted', `created: ${NOW}`, `updated: ${NOW}`, '---', '', '正文', ''].join('\n')
+  const r = await req(handlers, '/api/obsidian-wiki/page?id=ghost&category=concepts', {
+    method: 'POST', headers: { ...JSON_HDR, ...SAME_ORIGIN }, body: JSON.stringify({ raw }),
+  })
+  // 404 保护必须保留（不能靠保存“新建”覆盖已有页保护），但提示要可读、可执行：
+  // 面板里空白编辑器看起来像新建，失败信息必须说清「这里只编辑、不新建」。
+  assert.equal(r.status, 404)
+  assert.match(r.json.error, /页面不存在/, '错误信息必须让用户看懂是页面不存在')
+  assert.match(r.json.error, /wiki_ingest|wiki_capture|新建/, '必须给出可执行的下一步')
+  assert.equal(existsSync(join(dir, '.wiki', 'concepts', 'ghost.md')), false, '失败的保存不得落盘')
 })

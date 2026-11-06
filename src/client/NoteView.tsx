@@ -17,6 +17,9 @@ export interface NoteRef {
 
 type Mode = 'preview' | 'source'
 
+/** 服务端 404 文案（页面不存在）：面板没有「新建页」入口，空白编辑器不能当新建用。 */
+const MISSING_PAGE_RE = /页面不存在|page not found/i
+
 export function NoteView({
   note,
   brokenLink,
@@ -39,6 +42,8 @@ export function NoteView({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /** 目标页在磁盘上不存在：置灰编辑器，避免把 404 误当「新建」。 */
+  const [missing, setMissing] = useState(false)
 
   const pageUrl = () => {
     const scope = root ? `&root=${encodeURIComponent(root)}` : ''
@@ -47,7 +52,7 @@ export function NoteView({
 
   useEffect(() => {
     let cancelled = false
-    setError(null); setNotice(null)
+    setError(null); setNotice(null); setMissing(false)
     setDirty(false); setMode('preview')
     fetch(pageUrl())
       .then((r) => r.json())
@@ -59,7 +64,11 @@ export function NoteView({
       .catch((e) => { if (!cancelled) setError(String(e)) })
     fetchRawPage(note.id, note.category, root)
       .then((r) => { if (!cancelled) setRaw(r) })
-      .catch(() => { /* 源码拉取失败不打断预览；进入源码态保存时会再报 */ })
+      .catch((e) => {
+        // 页面不存在时源码态会渲染成一块空白编辑器（看起来像“新建”）；标出来并置灰，
+        // 保存按钮随之禁用，提示改走 wiki_ingest / wiki_capture 新建。
+        if (!cancelled && MISSING_PAGE_RE.test(String(e))) setMissing(true)
+      })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note.id, note.category, root])
@@ -84,6 +93,7 @@ export function NoteView({
   }
 
   const save = async () => {
+    if (missing) return
     setSaving(true); setError(null); setNotice(null)
     try {
       await saveRawPage(note.id, note.category, raw, root)
@@ -119,7 +129,7 @@ export function NoteView({
           {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}{copied ? '已复制' : '复制'}
         </button>
         <button type='button' className={`knj-btn ${dirty ? 'knj-btn--primary' : 'knj-btn--subtle'}`}
-          disabled={!dirty || saving} onClick={save}>
+          disabled={!dirty || saving || missing} onClick={save}>
           {saving ? '保存中…' : dirty ? '保存' : '已保存'}
         </button>
       </>}
@@ -127,6 +137,9 @@ export function NoteView({
 
     {brokenLink && <div className="knj-banner knj-banner--warn" style={{ marginBottom: 10 }}>
       <IconWarning size={14} />断链：页面「{brokenLink}」不存在
+    </div>}
+    {missing && <div className="knj-banner knj-banner--warn" style={{ marginBottom: 10 }}>
+      <IconWarning size={14} />页面不存在，不能在此新建（编辑器已锁定）。请让 Agent 用 wiki_ingest / wiki_capture 创建页面。
     </div>}
     {notice && <div className="knj-banner knj-banner--ok" style={{ marginBottom: 10 }}>
       <IconCheck size={14} />{notice}
@@ -140,11 +153,12 @@ export function NoteView({
       : <textarea
           className="knj-wb__editor"
           value={raw}
+          readOnly={missing}
           onChange={(e) => { setRaw(e.target.value); setDirty(true) }}
           spellCheck={false}
           placeholder='# 标题&#10;&#10;正文…（含 frontmatter 整份编辑）'
         />}
-    {mode === 'source' && !dirty && (
+    {mode === 'source' && !dirty && !missing && (
       <div className="knj-banner knj-banner--info" style={{ marginTop: 10 }}>
         <IconInfo size={14} />源码态展示磁盘原文，可直接编辑并保存（id / category 与路径不符会被服务端拒绝）。
       </div>

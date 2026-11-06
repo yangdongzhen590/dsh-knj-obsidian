@@ -1,5 +1,6 @@
 // src/graph-engine.ts
 import type { VaultStore } from './vault-store.ts'
+import { stripCodeRegions } from './lint.ts'
 import type { WikiCategory, Confidence } from './types.ts'
 
 export interface GraphNode {
@@ -41,7 +42,10 @@ export function buildGraph(store: VaultStore): GraphData {
       confidence: page?.confidence ?? 'extracted',
     })
     if (!page) continue
-    for (const m of page.body.matchAll(WIKILINK_RE)) {
+    // 与 lint 共用同一口径：剔除围栏/行内代码后再找链接，
+    // 否则正文里的示例字面量 [[wikilink]] 会被 /graph 当成断链。
+    const linkable = stripCodeRegions(page.body)
+    for (const m of linkable.matchAll(WIKILINK_RE)) {
       const target = m[1].trim()
       edges.push({ source: p.id, target, broken: !ids.has(target) })
       if (ids.has(target)) {
