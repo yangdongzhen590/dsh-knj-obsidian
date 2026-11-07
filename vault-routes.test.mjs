@@ -74,8 +74,8 @@ test('GET /vaults 返回当前库与列表（含 pageCount）', async (t) => {
   const s = setup(t, ['proj-a'])
   const r = await req(s.handlers, '/api/obsidian-wiki/vaults')
   assert.equal(r.status, 200)
-  assert.equal(r.json.current.root, s.cwd)
-  assert.equal(r.json.vaults.length, 2)
+  assert.equal(r.json.current.root, join(s.dir, 'proj-a'), '当前库应落到真实工作区库（启动目录不再是库）')
+  assert.equal(r.json.vaults.length, 1)
   assert.equal(typeof r.json.vaults[0].pageCount, 'number')
 })
 

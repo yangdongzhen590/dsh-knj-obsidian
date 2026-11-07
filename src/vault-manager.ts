@@ -2,7 +2,7 @@
 // v7 多 vault 管理：注册表（持久化）+ 当前库切换 + 新建/挂接/移除 + 工作区自动发现。
 // 注册表只记录库的「身份与指向」，绝不移动/删除磁盘上的库文件。
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { VaultStore } from './vault-store.ts'
 import { vaultIdOf } from './types.ts'
 import type { VaultListEntry, VaultProvider, VaultRecord } from './types.ts'
@@ -137,13 +137,18 @@ export class VaultManager implements VaultProvider {
   private seed(): void {
     const before = JSON.stringify(this.registry)
     const removed = new Set((this.registry.removedRoots ?? []).map((r) => resolve(r)))
+    // 启动目录（cwd）**不是库**，只是「向上找库时不要越过的边界」（见 knownRoots）。
+    // 历史上它被无条件登记成 source:'cwd' 的库，于是每在家目录 / DSH 安装目录启动一次，
+    // 下拉框里就多一条 0 页、未初始化的幽灵记录。这里清掉这些幽灵；盘上确实已有 `.wiki`
+    // 的 cwd 记录保留——那是用户真在那开过库的目录。
+    const kept = this.registry.vaults.filter((v) => v.source !== 'cwd' || existsSync(join(v.root, '.wiki')))
+    if (kept.length !== this.registry.vaults.length) this.registry.vaults = kept
     const add = (root: string, source: VaultRecord['source']): void => {
       const r = resolve(root)
       if (removed.has(r)) return
       if (this.registry.vaults.some((v) => resolve(v.root) === r)) return
       this.registry.vaults.push({ id: vaultIdOf(r), name: defaultNameFor(r, this.seedsNow()), root: r, source })
     }
-    add(this.opts.cwdRoot, 'cwd')
     for (const w of this.seedsNow()) {
       // 目录已消失的已注册工作区跳过，避免幽灵库
       if (!existsSync(w.path)) continue
@@ -151,10 +156,24 @@ export class VaultManager implements VaultProvider {
     }
     const current = this.registry.vaults.find((v) => v.id === this.registry.currentVaultId)
     if (!current) {
-      const first = this.registry.vaults.find((v) => resolve(v.root) === resolve(this.opts.cwdRoot)) ?? this.registry.vaults[0]
-      this.registry.currentVaultId = first?.id ?? null
+      // cwd 不再兜底成库，所以「打开就有库」改为落到**包住启动目录的最深已注册库**；
+      // 一条都没有时 currentVaultId 置 null（此时边栏显示"没有库"，而不是凭空建一个）。
+      this.registry.currentVaultId = (this.deepestAncestorOfCwd() ?? this.registry.vaults[0])?.id ?? null
     }
     this.persistIfChanged(before)
+  }
+
+  /** 包住启动目录的最深已注册库（cwd 不再登记后，它决定"打开就有库"落到哪）。 */
+  private deepestAncestorOfCwd(): VaultRecord | undefined {
+    const cwd = resolve(this.opts.cwdRoot)
+    let best: VaultRecord | undefined
+    for (const v of this.registry.vaults) {
+      const r = resolve(v.root)
+      const inside = cwd === r || cwd.startsWith(r.endsWith(sep) ? r : r + sep)
+      if (!inside) continue
+      if (!best || r.length > resolve(best.root).length) best = v
+    }
+    return best
   }
 
   // ---------- VaultProvider ----------
@@ -200,8 +219,9 @@ export class VaultManager implements VaultProvider {
   current(): VaultStore {
     const rec = this.currentRecord()
     if (!rec) {
-      // 防御：seed 后至少存在 cwd 库；仍兜底直接以 cwd 建库
-      return this.storeFor(this.opts.cwdRoot, true)
+      // 注册表里一条库都没有：启动目录只是边界，不是库。这里**不 ensure**——读路径不得写盘，
+      // 凭空在启动目录长出 .wiki 正是幽灵库的另一面。真写入时由 VaultStore.writePage 自行 ensure。
+      return this.storeFor(this.opts.cwdRoot, false)
     }
     // 不隐式 scaffold：只有已初始化的库才 ensure（幂等）。空壳库的初始化是**显式动作**
     // （wiki_init / UI「初始化」），写路径则由 VaultStore.writePage 自行 ensure。

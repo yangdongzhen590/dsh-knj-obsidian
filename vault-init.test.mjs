@@ -76,7 +76,8 @@ test('attach（显式挂接）：仍创建 .wiki；列表 initialized 反映磁�
 })
 
 test('GET /vaults 暴露 initialized（未初始化库标 false）', async (t) => {
-  const { cwd, wsDir, manager } = makeManager(t)
+  const { wsDir, manager } = makeManager(t)
+  manager.activateRoot(wsDir) // 显式登记：启动目录（cwd）不再是库，列表里只有真实登记的库
   const handlers = new Map()
   const host = { webServer: { register: (route) => { handlers.set(`${route.kind}:${route.path}`, route); return () => handlers.delete(`${route.kind}:${route.path}`) } } }
   mountWikiRoutes(host, manager)
@@ -87,10 +88,10 @@ test('GET /vaults 暴露 initialized（未初始化库标 false）', async (t) =
   let out = ''
   await route.handler(request, { setHeader: () => {}, writeHead: () => {}, end: (c) => { out += c ?? '' } })
   const body = JSON.parse(out)
-  const entry = body.vaults.find((v) => v.root === wsDir) ?? body.vaults.find((v) => v.root === cwd)
-  assert.ok(entry, '库列表应含临时库')
+  const entry = body.vaults.find((v) => v.root === wsDir)
+  assert.ok(entry, '库列表应含登记过的临时库')
   assert.equal(typeof entry.initialized, 'boolean', 'vaults 条目应带 initialized')
-  assert.equal(entry.initialized, false, 'cwd 库尚无 .wiki，应标未初始化')
+  assert.equal(entry.initialized, false, '该库尚无 .wiki，应标未初始化')
 
   manager.attachRoot(wsDir, '显式库')
   out = ''

@@ -27,24 +27,24 @@ function makeManager(opts) {
   })
 }
 
-test('seed：cwd 与工作区库自动进列表，当前默认 cwd 库', (t) => {
+test('seed：只登记工作区库，启动目录只作读边界', (t) => {
   const s = setup(t, ['proj-a', 'proj-b'])
   const m = makeManager(s)
   const vaults = m.listVaults()
-  assert.equal(vaults.length, 3)
-  const cur = m.currentRecord()
-  assert.equal(cur.root, s.cwd)
+  assert.equal(vaults.length, 2)
+  assert.equal(vaults.some((v) => v.root === s.cwd), false, '启动目录不应登记成库（幽灵库来源）')
   assert.ok(vaults.some((v) => v.root === join(s.dir, 'proj-a') && v.source === 'workspace'))
   assert.ok(vaults.some((v) => v.root === join(s.dir, 'proj-b') && v.source === 'workspace'))
-  assert.ok(vaults.some((v) => v.root === s.cwd && v.source === 'cwd'))
+  assert.equal(m.currentRecord().root, join(s.dir, 'proj-a'), '当前库落到第一个真实库')
 })
 
 test('seed：目录已消失的工作区不展示（无幽灵库）', (t) => {
   const s = setup(t)
   const ghost = { path: join(s.dir, 'gone') } // 目录不存在
   const m = makeManager({ ...s, ws: [ghost] })
-  assert.equal(m.listVaults().length, 1)
-  assert.equal(m.listVaults()[0].root, s.cwd)
+  assert.equal(m.listVaults().length, 0, '工作区消失 + 启动目录不登记 → 列表为空')
+  assert.equal(m.currentRecord(), null, '没有库时当前库为 null，不凭空造一个')
+  assert.equal(existsSync(join(s.cwd, '.wiki')), false, '也不得凭空建库')
 })
 
 test('切换库后 current() 落到目标库，页面读的是新库', (t) => {
@@ -105,20 +105,23 @@ test('removeVault：任意来源可移除、重启后不复活、显式挂接可
   m2.attachRoot(wsVault.root)
   assert.ok(m2.listVaults().some((v) => v.root === wsVault.root), '显式挂接找回已移除的库')
 
+  const keeper = m.attachRoot(join(s.dir, 'keep-me'))
   const attached = m.attachRoot(join(s.dir, 'remove-me'))
   m.switchVault(attached.id)
   assert.equal(m.removeVault(attached.id), true)
   assert.ok(existsSync(join(s.dir, 'remove-me', '.wiki')), '移除注册不删磁盘')
-  assert.notEqual(m.currentRecord().id, attached.id, '移除当前库后应落到其余库')
+  assert.equal(m.currentRecord().id, keeper.id, '移除当前库后应落到其余库')
 })
 
-test('注册表损坏：从空重建不崩，cwd 种子仍在', (t) => {
+test('注册表损坏：从空重建不崩，且不凭空登记启动目录', (t) => {
   const s = setup(t)
   mkdirSync(join(s.reg, '..'), { recursive: true })
   writeFileSync(s.reg, '{ broken json', 'utf8')
   const m = makeManager(s)
-  assert.equal(m.listVaults().length, 1)
-  assert.equal(m.listVaults()[0].root, s.cwd)
+  assert.equal(m.listVaults().length, 0)
+  assert.equal(m.currentRecord(), null)
+  assert.equal(m.current().wikiRoot, join(s.cwd, '.wiki'), '仍返回可用 store（只是不 scaffold）')
+  assert.equal(existsSync(join(s.cwd, '.wiki')), false, '不得凭空建库')
 })
 
 test('持久化：重建 manager 后列表与当前库保持', (t) => {
@@ -135,31 +138,37 @@ test('持久化：重建 manager 后列表与当前库保持', (t) => {
 test('listVaults 附带 pageCount（只读，不写盘）', (t) => {
   const s = setup(t)
   const m = makeManager(s)
-  m.current().ensure() // 先脚手架 cwd 库，确保 manifest 存在
-  const before = readFileSync(join(s.cwd, '.wiki', '.manifest.json'), 'utf8')
-  const entry = m.listVaults()[0]
+  const root = join(s.dir, 'paged')
+  m.attachRoot(root) // 显式挂接才建库（启动目录不再自动成为库）
+  const before = readFileSync(join(root, '.wiki', '.manifest.json'), 'utf8')
+  const entry = m.listVaults().find((v) => v.root === root)
+  assert.ok(entry)
   assert.equal(typeof entry.pageCount, 'number')
   assert.equal(entry.pageCount, 0)
-  const after = readFileSync(join(s.cwd, '.wiki', '.manifest.json'), 'utf8')
+  const after = readFileSync(join(root, '.wiki', '.manifest.json'), 'utf8')
   assert.equal(before, after, 'listVaults 不应改动磁盘')
 })
 
 test('currentRecord 优先已初始化的库（当前库是空壳时不返回空壳）', (t) => {
-  const s = setup(t, ['proj-a'])
-  const initialized = join(s.dir, 'proj-a')
+  const s = setup(t, ['proj-a', 'proj-b'])
+  const shell = join(s.dir, 'proj-a')
+  const initialized = join(s.dir, 'proj-b')
   mkdirSync(join(initialized, '.wiki'), { recursive: true })
   const m = makeManager(s)
-  // 种子把当前库设为 cwd（此刻未初始化），而 proj-a 已初始化 → 应返回 proj-a
-  assert.equal(existsSync(join(s.cwd, '.wiki')), false, '夹具前提：cwd 库未初始化')
+  m.switchVault(m.listVaults().find((v) => v.root === shell).id) // 当前库是空壳
+  assert.equal(existsSync(join(shell, '.wiki')), false, '夹具前提：当前库未初始化')
   assert.equal(m.currentRecord().root, initialized)
 })
 
 test('当前库已初始化时 currentRecord 行为不变（不跳到别的库）', (t) => {
-  const s = setup(t, ['proj-a'])
-  mkdirSync(join(s.dir, 'proj-a', '.wiki'), { recursive: true })
-  mkdirSync(join(s.cwd, '.wiki'), { recursive: true })
+  const s = setup(t, ['proj-a', 'proj-b'])
+  const a = join(s.dir, 'proj-a')
+  const b = join(s.dir, 'proj-b')
+  mkdirSync(join(a, '.wiki'), { recursive: true })
+  mkdirSync(join(b, '.wiki'), { recursive: true })
   const m = makeManager(s)
-  assert.equal(m.currentRecord().root, s.cwd, '当前库已初始化时应原样返回')
+  m.switchVault(m.listVaults().find((v) => v.root === b).id)
+  assert.equal(m.currentRecord().root, b, '当前库已初始化时应原样返回')
 })
 
 test('全部库都未初始化时，current() 不会凭空建库', (t) => {
